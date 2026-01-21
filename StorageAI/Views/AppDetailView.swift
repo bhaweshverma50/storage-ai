@@ -5,6 +5,7 @@ struct AppDetailView: View {
     @State private var searchText = ""
     @State private var selectedApp: AppEntry?
     @State private var sortOrder: SortOrder = .totalDesc
+    @Environment(\.accentTheme) private var accentTheme
     
     enum SortOrder: String, CaseIterable {
         case totalDesc = "Total Size"
@@ -117,13 +118,25 @@ struct AppDetailView: View {
                     
                     Spacer()
                     
-                    Picker("Sort", selection: $sortOrder) {
+                    // Sorting buttons with proper sizing
+                    HStack(spacing: 2) {
                         ForEach(SortOrder.allCases, id: \.self) { order in
-                            Text(order.rawValue).tag(order)
+                            Button {
+                                sortOrder = order
+                            } label: {
+                                Text(order.rawValue)
+                                    .font(.caption)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .background(sortOrder == order ? accentTheme : Color.clear)
+                            .foregroundStyle(sortOrder == order ? .white : .primary)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 300)
+                    .padding(3)
+                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 }
                 .padding(.trailing, 4)
                 

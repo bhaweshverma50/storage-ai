@@ -38,12 +38,17 @@ enum FileIndexer {
         includeHidden: Bool,
         excludedPaths: [String],
         cancellationToken: CancellationToken,
-        progress: @escaping (ScanUpdate) -> Void
+        progress: @escaping (ScanUpdate) -> Void,
+        initialBuckets: [StorageCategory: Int64]? = nil,
+        initialFiles: [StorageCategory: [FileEntry]]? = nil,
+        initialScannedFiles: Int = 0,
+        initialScannedBytes: Int64 = 0
     ) throws -> ScanResult {
-        var buckets = StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
-        var filesByCategory = StorageCategory.allCases.reduce(into: [StorageCategory: [FileEntry]]()) { $0[$1] = [] }
-        var scannedFiles = 0
-        var scannedBytes: Int64 = 0
+        // Start with initial values if resuming, otherwise start fresh
+        var buckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
+        var filesByCategory = initialFiles ?? StorageCategory.allCases.reduce(into: [StorageCategory: [FileEntry]]()) { $0[$1] = [] }
+        var scannedFiles = initialScannedFiles
+        var scannedBytes: Int64 = initialScannedBytes
         var lastProgressUpdate = Date()
 
         let excluded = Set(excludedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path.lowercased() })
@@ -147,22 +152,35 @@ enum FileIndexer {
 
                     let category = StorageClassifier.category(for: url)
                     buckets[category, default: 0] += size
-                    
-                    // Store files larger than 1MB for display
+
+                    // Store files larger than 1MB for display, with max limit per category
+                    let maxFilesPerCategory = 1000
                     if size > 1_000_000 {
-                        filesByCategory[category, default: []].append(
-                            FileEntry(
+                        var categoryFiles = filesByCategory[category, default: []]
+
+                        if categoryFiles.count < maxFilesPerCategory {
+                            categoryFiles.append(FileEntry(
+                                url: url,
+                                sizeBytes: size,
+                                modifiedAt: values.contentModificationDate
+                            ))
+                        } else if let minIndex = categoryFiles.indices.min(by: { categoryFiles[$0].sizeBytes < categoryFiles[$1].sizeBytes }),
+                                  categoryFiles[minIndex].sizeBytes < size {
+                            // Replace smallest file if new file is larger
+                            categoryFiles[minIndex] = FileEntry(
                                 url: url,
                                 sizeBytes: size,
                                 modifiedAt: values.contentModificationDate
                             )
-                        )
+                        }
+
+                        filesByCategory[category] = categoryFiles
                     }
 
-                    // Update progress every 3 seconds OR every 100 files, whichever comes first
+                    // Update progress every 5 seconds OR every 500 files, whichever comes first
                     let now = Date()
                     let timeSinceLastUpdate = now.timeIntervalSince(lastProgressUpdate)
-                    if timeSinceLastUpdate >= 3.0 || scannedFiles % 100 == 0 {
+                    if timeSinceLastUpdate >= 5.0 || scannedFiles % 500 == 0 {
                         lastProgressUpdate = now
                         progress(ScanUpdate(
                             scannedFiles: scannedFiles,

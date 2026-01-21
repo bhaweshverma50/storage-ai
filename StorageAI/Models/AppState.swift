@@ -79,16 +79,13 @@ final class AppState: ObservableObject {
     @AppStorage("colorTheme") var colorTheme: ColorTheme = .blue
     @AppStorage("fontSize") var fontSize: FontSize = .medium
     @Published var settings = AppSettings()
-    @Published var scanService: ScanService
+    let scanService = ScanService()
     
     private var cancellables = Set<AnyCancellable>()
     
     init() {
-        self.scanService = ScanService()
-        
-        // Forward changes from scanService to this object
+        // Forward changes from scanService to trigger UI updates
         scanService.objectWillChange
-            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }

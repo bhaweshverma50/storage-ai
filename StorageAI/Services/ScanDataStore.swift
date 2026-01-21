@@ -53,6 +53,27 @@ actor ScanDataStore {
         let totalFilesScanned: Int
         let totalBytesScanned: Int64
         let version: String
+        let scanState: ScanState
+        
+        // Backward compatibility for old cache files
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            lastScanDate = try container.decode(Date.self, forKey: .lastScanDate)
+            scanDurationSeconds = try container.decode(Double.self, forKey: .scanDurationSeconds)
+            totalFilesScanned = try container.decode(Int.self, forKey: .totalFilesScanned)
+            totalBytesScanned = try container.decode(Int64.self, forKey: .totalBytesScanned)
+            version = try container.decode(String.self, forKey: .version)
+            scanState = try container.decodeIfPresent(ScanState.self, forKey: .scanState) ?? .complete
+        }
+        
+        init(lastScanDate: Date, scanDurationSeconds: Double, totalFilesScanned: Int, totalBytesScanned: Int64, version: String, scanState: ScanState) {
+            self.lastScanDate = lastScanDate
+            self.scanDurationSeconds = scanDurationSeconds
+            self.totalFilesScanned = totalFilesScanned
+            self.totalBytesScanned = totalBytesScanned
+            self.version = version
+            self.scanState = scanState
+        }
     }
     
     // MARK: - Save
@@ -61,7 +82,8 @@ actor ScanDataStore {
         summary: StorageSummary,
         filesByCategory: [StorageCategory: [FileEntry]],
         progress: ScanProgress,
-        scanDuration: TimeInterval
+        scanDuration: TimeInterval,
+        scanState: ScanState = .complete
     ) async throws {
         // Convert to persisted format
         let buckets = summary.buckets.map { bucket in
@@ -102,7 +124,8 @@ actor ScanDataStore {
             scanDurationSeconds: scanDuration,
             totalFilesScanned: progress.scannedFiles,
             totalBytesScanned: progress.scannedBytes,
-            version: "1.0"
+            version: "1.0",
+            scanState: scanState
         )
         
         // Write to disk

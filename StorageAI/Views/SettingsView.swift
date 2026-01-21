@@ -16,37 +16,35 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     
     var body: some View {
-        GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // Header
-                    header
-                    
-                    // Two-column layout for top sections
-                    HStack(alignment: .top, spacing: 16) {
-                        // Left column: Appearance
-                        appearanceSection
-                            .frame(width: (geometry.size.width - 48 - 16) / 2)
-                        
-                        // Right column: About + Quick Actions
-                        VStack(spacing: 16) {
-                            aboutSection
-                            quickActionsSection
-                        }
-                        .frame(width: (geometry.size.width - 48 - 16) / 2)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Header
+                header
+
+                // Two-column layout for top sections
+                HStack(alignment: .top, spacing: 16) {
+                    // Left column: Appearance
+                    appearanceSection
+                        .frame(maxWidth: .infinity)
+
+                    // Right column: About + Quick Actions
+                    VStack(spacing: 16) {
+                        aboutSection
+                        quickActionsSection
                     }
-                    
-                    // Scan Settings
-                    scanSettingsSection
-                    
-                    // AI Settings
-                    aiSettingsSection
-                    
-                    // Excluded Paths
-                    excludedPathsSection
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(24)
+
+                // Scan Settings
+                scanSettingsSection
+
+                // AI Settings
+                aiSettingsSection
+
+                // Excluded Paths
+                excludedPathsSection
             }
+            .padding(24)
         }
         .task {
             await checkOllamaStatus()

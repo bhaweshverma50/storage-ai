@@ -52,3 +52,4 @@ dist/
 *.log
 *.tmp
 *~
+.serena/

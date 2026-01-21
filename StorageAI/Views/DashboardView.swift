@@ -36,9 +36,17 @@ struct DashboardView: View {
         } detail: {
             detailView
         }
+        .tint(accentTheme)
         .task {
-            await appState.scanService.loadCachedData()
             await loadInitialData()
+        }
+        .onChange(of: appState.scanService.isScanning) { wasScanning, isScanning in
+            // When scan finishes, reload app data
+            if wasScanning && !isScanning && appState.scanService.summary.totalBytes > 0 {
+                Task {
+                    await loadAppData()
+                }
+            }
         }
     }
     
@@ -47,13 +55,28 @@ struct DashboardView: View {
     
     // MARK: - Enhanced Sidebar with Disk Info
     private var sidebar: some View {
-        List(selection: $selectedNavItem) {
+        List {
             Section {
                 ForEach(NavigationItem.allCases) { item in
-                    NavigationLink(value: item) {
-                        Label(item.rawValue, systemImage: item.icon)
-                            .font(.system(size: 13 * fontScale))
+                    Button {
+                        selectedNavItem = item
+                    } label: {
+                        HStack {
+                            Label(item.rawValue, systemImage: item.icon)
+                                .font(.system(size: 13 * fontScale))
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(selectedNavItem == item ? accentTheme.opacity(0.9) : Color.clear)
+                        )
+                        .foregroundStyle(selectedNavItem == item ? .white : .primary)
                     }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
                 }
             }
             
@@ -121,6 +144,7 @@ struct DashboardView: View {
             }
         }
         .listStyle(.sidebar)
+        .tint(accentTheme)
         .accentColor(accentTheme)
         .navigationTitle("Storage AI")
         .frame(minWidth: 220)
@@ -129,25 +153,30 @@ struct DashboardView: View {
     // MARK: - Detail View
     @ViewBuilder
     private var detailView: some View {
-        switch selectedNavItem {
-        case .overview:
-            OverviewView(
-                topApps: topApps,
-                aiRecommendations: aiRecommendations,
-                isLoadingAI: isLoadingAI,
-                onStartScan: startScan,
-                onCancelScan: { appState.scanService.cancelScan() },
-                onLoadAI: loadAIRecommendations
-            )
-            .environmentObject(appState)
-        case .categories:
-            CategoryDetailView()
-        case .applications:
-            AppDetailView(apps: topApps)
-        case .cleanup:
-            CleanupView(targets: cleanupTargets)
-        case .settings:
-            SettingsView()
+        if appState.scanService.isLoadingCache {
+            ProgressView("Loading...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            switch selectedNavItem {
+            case .overview:
+                OverviewView(
+                    topApps: topApps,
+                    aiRecommendations: aiRecommendations,
+                    isLoadingAI: isLoadingAI,
+                    onStartScan: startScan,
+                    onCancelScan: { appState.scanService.cancelScan() },
+                    onLoadAI: loadAIRecommendations
+                )
+                .environmentObject(appState)
+            case .categories:
+                CategoryDetailView()
+            case .applications:
+                AppDetailView(apps: topApps)
+            case .cleanup:
+                CleanupView(targets: cleanupTargets)
+            case .settings:
+                SettingsView()
+            }
         }
     }
     
@@ -158,7 +187,10 @@ struct DashboardView: View {
         guard appState.scanService.summary.totalBytes > 0 else {
             return
         }
-        
+        await loadAppData()
+    }
+    
+    private func loadAppData() async {
         isLoadingApps = true
         
         let apps = await Task.detached {
@@ -360,7 +392,7 @@ struct OverviewView: View {
                 withAnimation { scanButtonPressed = true }
                 onStartScan()
             } label: {
-                Label("Scan", systemImage: "magnifyingglass")
+                Label(appState.scanService.scanButtonTitle, systemImage: "magnifyingglass")
             }
             .buttonStyle(.borderedProminent)
         }
@@ -531,9 +563,18 @@ struct OverviewView: View {
                         Text("Largest Apps")
                             .font(.system(size: 14 * fontScale, weight: .medium))
                         
-                        if topApps.isEmpty {
+                        if appState.scanService.summary.totalBytes == 0 {
+                            // No scan data yet
                             Spacer()
-                            Text("Loading...")
+                            Text("Run a scan first")
+                                .font(.system(size: 12 * fontScale))
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity)
+                            Spacer()
+                        } else if topApps.isEmpty {
+                            // Has scan data but no apps loaded yet or none found
+                            Spacer()
+                            Text("No applications detected")
                                 .font(.system(size: 12 * fontScale))
                                 .foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity)

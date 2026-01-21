@@ -1,6 +1,12 @@
 import Foundation
 import Combine
 
+enum ScanState: String, Codable {
+    case neverScanned = "never"      // First time - show "Start Scan"
+    case partial = "partial"          // Cancelled/interrupted - show "Resume Scan"  
+    case complete = "complete"        // Fully completed - show "Scan Again"
+}
+
 @MainActor
 final class ScanService: ObservableObject {
     @Published private(set) var summary: StorageSummary
@@ -10,39 +16,63 @@ final class ScanService: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastScanDate: Date?
     @Published private(set) var hasLoadedCache = false
+    @Published private(set) var isLoadingCache = true
+    @Published private(set) var scanState: ScanState = .neverScanned
 
     private var scanTask: Task<Void, Never>?
+    private var periodicSaveTask: Task<Void, Never>?
     private var cancellationToken: CancellationToken?
     private var scanStartTime: Date?
+    private var lastPeriodicSaveTime: Date?
+    
+    private let periodicSaveInterval: TimeInterval = 60 // Save every 60 seconds
+    
+    var scanButtonTitle: String {
+        switch scanState {
+        case .neverScanned: return "Start Scan"
+        case .partial: return "Resume Scan"
+        case .complete: return "Scan Again"
+        }
+    }
 
     init() {
         let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
         self.summary = StorageSummary(buckets: initialBuckets)
+
+        // Load cache immediately on init
+        Task { @MainActor in
+            await self.loadCachedData()
+        }
     }
     
     // MARK: - Load Cached Data
     
     func loadCachedData() async {
-        guard !hasLoadedCache else { return }
+        guard !hasLoadedCache else {
+            isLoadingCache = false
+            return
+        }
         hasLoadedCache = true
-        
+
         do {
             if let cached = try await ScanDataStore.shared.load() {
-                await MainActor.run {
-                    self.summary = cached.summary
-                    self.filesByCategory = cached.filesByCategory
-                    self.lastScanDate = cached.metadata.lastScanDate
-                    self.progress = ScanProgress(
-                        scannedFiles: cached.metadata.totalFilesScanned,
-                        scannedBytes: cached.metadata.totalBytesScanned,
-                        currentPath: "",
-                        phase: .complete
-                    )
-                }
+                self.summary = cached.summary
+                self.filesByCategory = cached.filesByCategory
+                self.lastScanDate = cached.metadata.lastScanDate
+                self.progress = ScanProgress(
+                    scannedFiles: cached.metadata.totalFilesScanned,
+                    scannedBytes: cached.metadata.totalBytesScanned,
+                    currentPath: "",
+                    phase: .complete
+                )
+                // Load scan state from cache
+                self.scanState = cached.metadata.scanState
             }
         } catch {
             print("Failed to load cached scan data: \(error)")
         }
+
+        isLoadingCache = false
     }
     
     // MARK: - Check if Rescan Needed
@@ -56,24 +86,56 @@ final class ScanService: ObservableObject {
     func startScan(settings: AppSettings, roots: [URL]) {
         guard !isScanning else { return }
         
+        // Check if this is a resume BEFORE any state changes
+        let isResume = scanState == .partial && summary.totalBytes > 0
+        
+        // Capture initial values for resume BEFORE any resets
+        let resumeInitialBuckets: [StorageCategory: Int64]? = isResume ? Dictionary(uniqueKeysWithValues: summary.buckets.map { ($0.category, $0.bytes) }) : nil
+        let resumeInitialFiles: [StorageCategory: [FileEntry]]? = isResume ? filesByCategory : nil
+        let resumeScannedFiles = isResume ? progress.scannedFiles : 0
+        let resumeScannedBytes = isResume ? progress.scannedBytes : 0
+        
         // Set scanning state IMMEDIATELY
         isScanning = true
         lastError = nil
         scanStartTime = Date()
-        progress = ScanProgress(phase: .preparing)
+        
+        // Only reset progress for fresh scans
+        if !isResume {
+            progress = ScanProgress(phase: .preparing)
+            let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
+            summary = StorageSummary(buckets: initialBuckets)
+            filesByCategory = [:]
+        } else {
+            // For resume, update phase but keep counts
+            progress = ScanProgress(
+                scannedFiles: progress.scannedFiles,
+                scannedBytes: progress.scannedBytes,
+                currentPath: "Resuming scan...",
+                phase: .preparing
+            )
+        }
         
         // Create cancellation token
         let token = CancellationToken()
         self.cancellationToken = token
         
-        // Reset data
-        let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
-        summary = StorageSummary(buckets: initialBuckets)
-        filesByCategory = [:]
-        
         // Capture settings for background task
         let includeHidden = settings.includeHidden
         let excludedPaths = settings.excludedPaths
+        
+        // Start periodic save task (saves every 60 seconds during scan)
+        periodicSaveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
+                guard let self = self, !Task.isCancelled, self.isScanning else { break }
+                await MainActor.run {
+                    if self.summary.totalBytes > 0 {
+                        self.saveCurrentProgress()
+                    }
+                }
+            }
+        }
         
         // Start background scan
         scanTask = Task { [weak self] in
@@ -87,10 +149,10 @@ final class ScanService: ObservableObject {
                         includeHidden: includeHidden,
                         excludedPaths: excludedPaths,
                         cancellationToken: token,
-                        progress: { update in
+                        progress: { [weak self] update in
                             // Update progress AND summary on main actor
                             Task { @MainActor in
-                                guard !token.isCancelled else { return }
+                                guard let self = self, !token.isCancelled else { return }
                                 self.progress = ScanProgress(
                                     scannedFiles: update.scannedFiles,
                                     scannedBytes: update.scannedBytes,
@@ -104,7 +166,11 @@ final class ScanService: ObservableObject {
                                 }
                                 self.summary = StorageSummary(buckets: bucketList)
                             }
-                        }
+                        },
+                        initialBuckets: resumeInitialBuckets,
+                        initialFiles: resumeInitialFiles,
+                        initialScannedFiles: resumeScannedFiles,
+                        initialScannedBytes: resumeScannedBytes
                     )
                     return .success(scanResult)
                 } catch {
@@ -120,8 +186,9 @@ final class ScanService: ObservableObject {
                 return
             }
             
-            // Calculate scan duration
-            let scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
+            // Cancel periodic save task
+            self.periodicSaveTask?.cancel()
+            self.periodicSaveTask = nil
             
             // Final update on main actor
             await MainActor.run {
@@ -130,6 +197,7 @@ final class ScanService: ObservableObject {
                     self.summary = StorageSummary(buckets: scanResult.buckets)
                     self.filesByCategory = scanResult.filesByCategory
                     self.lastScanDate = Date()
+                    self.scanState = .complete  // Mark as complete scan
                     self.progress = ScanProgress(
                         scannedFiles: self.progress.scannedFiles,
                         scannedBytes: self.progress.scannedBytes,
@@ -137,19 +205,12 @@ final class ScanService: ObservableObject {
                         phase: .complete
                     )
                     
-                    // Save to cache in background
-                    Task.detached(priority: .background) {
-                        try? await ScanDataStore.shared.save(
-                            summary: self.summary,
-                            filesByCategory: self.filesByCategory,
-                            progress: self.progress,
-                            scanDuration: scanDuration
-                        )
-                    }
+                    // Save final result to cache
+                    self.saveCurrentProgress()
                     
                 case .failure(let error):
                     if case FileIndexerError.cancelled = error {
-                        // Don't set error for cancellation
+                        // Don't set error for cancellation - progress already saved in cancelScan()
                     } else {
                         self.lastError = error.localizedDescription
                     }
@@ -165,9 +226,19 @@ final class ScanService: ObservableObject {
         cancellationToken?.cancel()
         cancellationToken = nil
         
-        // Cancel the task
+        // Cancel the tasks
         scanTask?.cancel()
         scanTask = nil
+        periodicSaveTask?.cancel()
+        periodicSaveTask = nil
+        
+        // Mark as partial scan
+        scanState = .partial
+        
+        // Save current progress before stopping
+        if summary.totalBytes > 0 {
+            saveCurrentProgress()
+        }
         
         // Update state
         isScanning = false
@@ -177,6 +248,33 @@ final class ScanService: ObservableObject {
             currentPath: "",
             phase: .complete
         )
+    }
+    
+    // MARK: - Save Current Progress
+    
+    func saveCurrentProgress() {
+        let summaryToSave = self.summary
+        let filesToSave = self.filesByCategory
+        let progressToSave = self.progress
+        let scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        let currentScanState = self.scanState
+        
+        // Update last scan date for partial saves too
+        self.lastScanDate = Date()
+        
+        Task.detached(priority: .background) {
+            do {
+                try await ScanDataStore.shared.save(
+                    summary: summaryToSave,
+                    filesByCategory: filesToSave,
+                    progress: progressToSave,
+                    scanDuration: scanDuration,
+                    scanState: currentScanState
+                )
+            } catch {
+                print("Failed to save current progress: \(error)")
+            }
+        }
     }
 
     func removeEntries(category: StorageCategory, ids: Set<UUID>) {

@@ -576,32 +576,36 @@ struct SectionHeader: View {
 // MARK: - Theme Picker
 struct ThemePicker: View {
     @Binding var selectedTheme: ColorTheme
-    
+
     var body: some View {
         HStack(spacing: 12) {
             ForEach(ColorTheme.allCases, id: \.self) { theme in
                 Button {
-                    withAnimation(.spring(response: 0.3)) {
-                        selectedTheme = theme
-                    }
+                    selectedTheme = theme
                 } label: {
-                    Circle()
-                        .fill(theme.accentColor)
-                        .frame(width: 28, height: 28)
-                        .overlay {
-                            if selectedTheme == theme {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(.white)
+                    ZStack {
+                        Color.clear
+                        Circle()
+                            .fill(theme.accentColor)
+                            .frame(width: 28, height: 28)
+                            .overlay {
+                                if selectedTheme == theme {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(.white)
+                                }
                             }
-                        }
-                        .overlay {
-                            Circle()
-                                .strokeBorder(.white.opacity(0.3), lineWidth: 2)
-                        }
-                        .shadow(color: theme.accentColor.opacity(0.4), radius: selectedTheme == theme ? 6 : 0)
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(.white.opacity(0.3), lineWidth: 2)
+                            }
+                            .shadow(color: theme.accentColor.opacity(0.4), radius: selectedTheme == theme ? 6 : 0)
+                    }
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .animation(.easeOut(duration: 0.15), value: selectedTheme)
             }
         }
     }
@@ -610,17 +614,16 @@ struct ThemePicker: View {
 // MARK: - Font Size Picker
 struct FontSizePicker: View {
     @Binding var selectedSize: FontSize
-    
+
     var body: some View {
         HStack(spacing: 8) {
             ForEach(FontSize.allCases, id: \.self) { size in
                 FontSizeButton(size: size, isSelected: selectedSize == size) {
-                    withAnimation(.spring(response: 0.3)) {
-                        selectedSize = size
-                    }
+                    selectedSize = size
                 }
             }
         }
+        .animation(.easeOut(duration: 0.15), value: selectedSize)
     }
 }
 
@@ -628,7 +631,7 @@ struct FontSizeButton: View {
     let size: FontSize
     let isSelected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -647,6 +650,7 @@ struct FontSizeButton: View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(isSelected ? Color.primary.opacity(0.2) : Color.clear, lineWidth: 1)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? .primary : .secondary)
@@ -656,17 +660,16 @@ struct FontSizeButton: View {
 // MARK: - Appearance Picker
 struct AppearancePicker: View {
     @Binding var selectedMode: AppearanceMode
-    
+
     var body: some View {
         HStack(spacing: 8) {
             ForEach(AppearanceMode.allCases, id: \.self) { mode in
                 AppearanceButton(mode: mode, isSelected: selectedMode == mode) {
-                    withAnimation(.spring(response: 0.3)) {
-                        selectedMode = mode
-                    }
+                    selectedMode = mode
                 }
             }
         }
+        .animation(.easeOut(duration: 0.15), value: selectedMode)
     }
 }
 
@@ -674,7 +677,7 @@ struct AppearanceButton: View {
     let mode: AppearanceMode
     let isSelected: Bool
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
@@ -693,6 +696,7 @@ struct AppearanceButton: View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(isSelected ? Color.primary.opacity(0.2) : Color.clear, lineWidth: 1)
             )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? .primary : .secondary)

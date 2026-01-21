@@ -9,10 +9,12 @@ struct StorageAIApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(appState)
-                .environment(\.accentTheme, appState.colorTheme.accentColor)
-                .environment(\.fontScale, appState.fontSize.scale)
                 .preferredColorScheme(appState.effectiveColorScheme)
                 .tint(appState.colorTheme.accentColor)
+                .onAppear {
+                    // Connect appState to delegate for termination handling
+                    appDelegate.appState = appState
+                }
         }
         .windowStyle(.automatic)
         .windowResizability(.contentSize)
@@ -61,8 +63,27 @@ struct StorageAIApp: App {
 
 // MARK: - App Delegate
 class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var appState: AppState?
+    
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false // Keep app running in menu bar when window is closed
+    }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        // Save scan progress when app is about to quit
+        if let scanService = appState?.scanService, scanService.summary.totalBytes > 0 {
+            // Perform synchronous save since we're terminating
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                await MainActor.run {
+                    scanService.saveCurrentProgress()
+                }
+                // Give a moment for the save to complete
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 1.0)
+        }
     }
 }
 
@@ -225,12 +246,14 @@ struct MenuBarView: View {
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+    @State private var currentAccentColor: Color = ColorTheme.blue.accentColor
+    @State private var currentFontScale: CGFloat = FontSize.medium.scale
 
     var body: some View {
         ZStack {
             // Background with subtle gradient for glassmorphism
             backgroundView
-            
+
             if appState.didCompleteOnboarding {
                 DashboardView()
                     .transition(.asymmetric(
@@ -247,26 +270,43 @@ struct RootView: View {
         }
         .frame(minWidth: 950, minHeight: 600)
         .animation(.spring(response: 0.5, dampingFraction: 0.8), value: appState.didCompleteOnboarding)
+        .environment(\.accentTheme, currentAccentColor)
+        .environment(\.fontScale, currentFontScale)
+        .onAppear {
+            currentAccentColor = appState.colorTheme.accentColor
+            currentFontScale = appState.fontSize.scale
+        }
+        .onChange(of: appState.colorTheme) { _, newTheme in
+            currentAccentColor = newTheme.accentColor
+        }
+        .onChange(of: appState.fontSize) { _, newSize in
+            currentFontScale = newSize.scale
+        }
     }
-    
+
     private var backgroundView: some View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
-            
-            // Subtle gradient orbs for glassmorphism effect
-            GeometryReader { geometry in
-                Circle()
-                    .fill(appState.colorTheme.accentColor.opacity(colorScheme == .dark ? 0.08 : 0.05))
-                    .frame(width: 400, height: 400)
-                    .blur(radius: 100)
-                    .offset(x: -100, y: -100)
-                
-                Circle()
-                    .fill(appState.colorTheme.accentColor.opacity(colorScheme == .dark ? 0.06 : 0.04))
-                    .frame(width: 300, height: 300)
-                    .blur(radius: 80)
-                    .offset(x: geometry.size.width - 200, y: geometry.size.height - 200)
-            }
+
+            RadialGradient(
+                colors: [
+                    currentAccentColor.opacity(colorScheme == .dark ? 0.08 : 0.05),
+                    Color.clear
+                ],
+                center: .topLeading,
+                startRadius: 0,
+                endRadius: 400
+            )
+
+            RadialGradient(
+                colors: [
+                    currentAccentColor.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                    Color.clear
+                ],
+                center: .bottomTrailing,
+                startRadius: 0,
+                endRadius: 300
+            )
         }
         .ignoresSafeArea()
     }

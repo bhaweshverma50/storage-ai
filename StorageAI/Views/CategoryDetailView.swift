@@ -158,13 +158,14 @@ struct CategoryFilesSheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     let category: StorageCategory
-    
+
     @State private var searchText = ""
     @State private var selection = Set<UUID>()
     @State private var showDeleteAlert = false
     @State private var deleteError: String?
     @State private var sortOrder: SortOrder = .sizeDesc
-    
+    @State private var cachedFilteredFiles: [FileEntry] = []
+
     enum SortOrder: String, CaseIterable {
         case sizeDesc = "Largest First"
         case sizeAsc = "Smallest First"
@@ -172,13 +173,13 @@ struct CategoryFilesSheet: View {
         case dateAsc = "Oldest First"
         case nameAsc = "Name A-Z"
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             sheetHeader
             Divider()
-            
-            if filteredFiles.isEmpty {
+
+            if cachedFilteredFiles.isEmpty {
                 EmptyStateView(
                     icon: "doc.text.magnifyingglass",
                     title: "No Files Found",
@@ -187,7 +188,7 @@ struct CategoryFilesSheet: View {
             } else {
                 fileList
             }
-            
+
             if !selection.isEmpty {
                 footer
             }
@@ -201,6 +202,30 @@ struct CategoryFilesSheet: View {
         } message: {
             Text("This action cannot be undone.")
         }
+        .onAppear { updateFilteredFiles() }
+        .onChange(of: searchText) { _, _ in updateFilteredFiles() }
+        .onChange(of: sortOrder) { _, _ in updateFilteredFiles() }
+    }
+
+    private func updateFilteredFiles() {
+        var files = allFiles
+
+        if !searchText.isEmpty {
+            files = files.filter { entry in
+                entry.url.lastPathComponent.localizedCaseInsensitiveContains(searchText) ||
+                entry.url.path.localizedCaseInsensitiveContains(searchText)
+            }
+        }
+
+        switch sortOrder {
+        case .sizeDesc: files.sort { $0.sizeBytes > $1.sizeBytes }
+        case .sizeAsc: files.sort { $0.sizeBytes < $1.sizeBytes }
+        case .dateDesc: files.sort { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
+        case .dateAsc: files.sort { ($0.modifiedAt ?? .distantPast) < ($1.modifiedAt ?? .distantPast) }
+        case .nameAsc: files.sort { $0.url.lastPathComponent.localizedCompare($1.url.lastPathComponent) == .orderedAscending }
+        }
+
+        cachedFilteredFiles = files
     }
     
     private var sheetHeader: some View {
@@ -213,7 +238,7 @@ struct CategoryFilesSheet: View {
                 Text(category.displayName)
                     .font(.headline)
                 
-                Text("\(Formatters.number(filteredFiles.count)) files • \(Formatters.bytes(totalBytes))")
+                Text("\(Formatters.number(cachedFilteredFiles.count)) files • \(Formatters.bytes(totalBytes))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -243,7 +268,7 @@ struct CategoryFilesSheet: View {
     }
     
     private var fileList: some View {
-        List(filteredFiles, selection: $selection) { entry in
+        List(cachedFilteredFiles, selection: $selection) { entry in
             FileRow(entry: entry)
                 .contextMenu {
                     Button("Reveal in Finder") {
@@ -273,7 +298,7 @@ struct CategoryFilesSheet: View {
             
             Button("Reveal in Finder") {
                 if let id = selection.first,
-                   let entry = filteredFiles.first(where: { $0.id == id }) {
+                   let entry = cachedFilteredFiles.first(where: { $0.id == id }) {
                     NSWorkspace.shared.selectFile(entry.url.path, inFileViewerRootedAtPath: entry.url.deletingLastPathComponent().path)
                 }
             }
@@ -293,34 +318,13 @@ struct CategoryFilesSheet: View {
     private var allFiles: [FileEntry] {
         appState.scanService.filesByCategory[category] ?? []
     }
-    
-    private var filteredFiles: [FileEntry] {
-        var files = allFiles
-        
-        if !searchText.isEmpty {
-            files = files.filter { entry in
-                entry.url.lastPathComponent.localizedCaseInsensitiveContains(searchText) ||
-                entry.url.path.localizedCaseInsensitiveContains(searchText)
-            }
-        }
-        
-        switch sortOrder {
-        case .sizeDesc: files.sort { $0.sizeBytes > $1.sizeBytes }
-        case .sizeAsc: files.sort { $0.sizeBytes < $1.sizeBytes }
-        case .dateDesc: files.sort { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
-        case .dateAsc: files.sort { ($0.modifiedAt ?? .distantPast) < ($1.modifiedAt ?? .distantPast) }
-        case .nameAsc: files.sort { $0.url.lastPathComponent.localizedCompare($1.url.lastPathComponent) == .orderedAscending }
-        }
-        
-        return files
-    }
-    
+
     private var totalBytes: Int64 {
-        filteredFiles.reduce(0) { $0 + $1.sizeBytes }
+        cachedFilteredFiles.reduce(0) { $0 + $1.sizeBytes }
     }
-    
+
     private func deleteSelected() {
-        let toDelete = filteredFiles.filter { selection.contains($0.id) }
+        let toDelete = cachedFilteredFiles.filter { selection.contains($0.id) }
         
         do {
             for file in toDelete {
@@ -338,38 +342,56 @@ struct CategoryFilesSheet: View {
 // MARK: - File Row
 struct FileRow: View {
     let entry: FileEntry
-    
+    @State private var icon: NSImage?
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: entry.url.path))
-                .resizable()
-                .frame(width: 28, height: 28)
-            
+            Group {
+                if let icon = icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                } else {
+                    Image(systemName: "doc")
+                        .resizable()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 28, height: 28)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.url.lastPathComponent)
                     .font(.subheadline)
                     .lineLimit(1)
-                
+
                 Text(entry.url.deletingLastPathComponent().path)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
-            
+
             Spacer()
-            
+
             if let date = entry.modifiedAt {
                 Text(Formatters.relativeDate(date))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            
+
             Text(Formatters.bytes(entry.sizeBytes))
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .frame(width: 70, alignment: .trailing)
         }
         .padding(.vertical, 2)
+        .task {
+            icon = await loadIcon()
+        }
+    }
+
+    private func loadIcon() async -> NSImage {
+        await Task.detached {
+            NSWorkspace.shared.icon(forFile: entry.url.path)
+        }.value
     }
 }
 
