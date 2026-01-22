@@ -19,6 +19,14 @@ actor ScanDataStore {
         cacheDirectory.appendingPathComponent("metadata.json")
     }
     
+    private var appsDataURL: URL {
+        cacheDirectory.appendingPathComponent("apps_data.json")
+    }
+    
+    private var performanceHistoryURL: URL {
+        cacheDirectory.appendingPathComponent("performance_history.json")
+    }
+    
     private init() {
         // Ensure cache directory exists
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
@@ -142,7 +150,7 @@ actor ScanDataStore {
     
     // MARK: - Load
     
-    func load() async throws -> (summary: StorageSummary, filesByCategory: [StorageCategory: [FileEntry]], metadata: ScanMetadata)? {
+    func load() async throws -> (summary: StorageSummary, filesByCategory: [StorageCategory: [FileEntry]], metadata: ScanMetadata, fileCounts: [StorageCategory: Int])? {
         guard fileManager.fileExists(atPath: scanDataURL.path),
               fileManager.fileExists(atPath: metadataURL.path) else {
             return nil
@@ -157,9 +165,11 @@ actor ScanDataStore {
         let metadataJSON = try Data(contentsOf: metadataURL)
         let metadata = try decoder.decode(ScanMetadata.self, from: metadataJSON)
         
-        // Convert back to app models
+        // Convert back to app models and extract file counts
+        var fileCounts: [StorageCategory: Int] = [:]
         let buckets = scanData.buckets.compactMap { persisted -> StorageBucket? in
             guard let category = StorageCategory(rawValue: persisted.category) else { return nil }
+            fileCounts[category] = persisted.fileCount
             return StorageBucket(category: category, bytes: persisted.bytes)
         }
         
@@ -185,7 +195,7 @@ actor ScanDataStore {
             filesByCategory[category, default: []].append(entry)
         }
         
-        return (summary, filesByCategory, metadata)
+        return (summary, filesByCategory, metadata, fileCounts)
     }
     
     // MARK: - Metadata
@@ -216,5 +226,119 @@ actor ScanDataStore {
         guard let metadata = await getMetadata() else { return true }
         let age = Date().timeIntervalSince(metadata.lastScanDate)
         return age > TimeInterval(maxAgeHours * 3600)
+    }
+    
+    // MARK: - Apps Data
+    
+    struct PersistedAppEntry: Codable {
+        let name: String
+        let bundleIdentifier: String?
+        let bundlePath: String
+        let bundleSizeBytes: Int64
+        let supportSizeBytes: Int64
+        let cacheSizeBytes: Int64
+        let containerSizeBytes: Int64
+    }
+    
+    func saveApps(_ apps: [AppEntry]) async throws {
+        let persistedApps = apps.map { app in
+            PersistedAppEntry(
+                name: app.name,
+                bundleIdentifier: app.bundleIdentifier,
+                bundlePath: app.bundleURL.path,
+                bundleSizeBytes: app.bundleSizeBytes,
+                supportSizeBytes: app.supportSizeBytes,
+                cacheSizeBytes: app.cacheSizeBytes,
+                containerSizeBytes: app.containerSizeBytes
+            )
+        }
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let data = try encoder.encode(persistedApps)
+        try data.write(to: appsDataURL)
+    }
+    
+    func loadApps() async throws -> [AppEntry]? {
+        guard fileManager.fileExists(atPath: appsDataURL.path) else {
+            return nil
+        }
+        
+        let data = try Data(contentsOf: appsDataURL)
+        let decoder = JSONDecoder()
+        let persistedApps = try decoder.decode([PersistedAppEntry].self, from: data)
+        
+        return persistedApps.map { persisted in
+            AppEntry(
+                name: persisted.name,
+                bundleIdentifier: persisted.bundleIdentifier,
+                bundleURL: URL(fileURLWithPath: persisted.bundlePath),
+                bundleSizeBytes: persisted.bundleSizeBytes,
+                supportSizeBytes: persisted.supportSizeBytes,
+                cacheSizeBytes: persisted.cacheSizeBytes,
+                containerSizeBytes: persisted.containerSizeBytes
+            )
+        }
+    }
+    
+    func clearApps() async {
+        try? fileManager.removeItem(at: appsDataURL)
+    }
+    
+    // MARK: - Performance History (for time estimation)
+    
+    struct ScanPerformanceHistory: Codable {
+        var completedScans: Int
+        var totalBytesScanned: Int64
+        var totalTimeSeconds: Double
+        var lastUpdated: Date
+        
+        /// Average scan speed in bytes per second
+        var averageBytesPerSecond: Double {
+            guard totalTimeSeconds > 0 else { return 50_000_000 } // Default: 50 MB/s
+            return Double(totalBytesScanned) / totalTimeSeconds
+        }
+        
+        init(completedScans: Int = 0, totalBytesScanned: Int64 = 0, totalTimeSeconds: Double = 0, lastUpdated: Date = Date()) {
+            self.completedScans = completedScans
+            self.totalBytesScanned = totalBytesScanned
+            self.totalTimeSeconds = totalTimeSeconds
+            self.lastUpdated = lastUpdated
+        }
+        
+        /// Update history with a new completed scan
+        mutating func recordScan(bytesScanned: Int64, durationSeconds: Double) {
+            completedScans += 1
+            totalBytesScanned += bytesScanned
+            totalTimeSeconds += durationSeconds
+            lastUpdated = Date()
+        }
+    }
+    
+    func savePerformanceHistory(_ history: ScanPerformanceHistory) async throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = .prettyPrinted
+        let data = try encoder.encode(history)
+        try data.write(to: performanceHistoryURL)
+    }
+    
+    func loadPerformanceHistory() async -> ScanPerformanceHistory {
+        guard fileManager.fileExists(atPath: performanceHistoryURL.path) else {
+            return ScanPerformanceHistory()
+        }
+        
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let data = try Data(contentsOf: performanceHistoryURL)
+            return try decoder.decode(ScanPerformanceHistory.self, from: data)
+        } catch {
+            return ScanPerformanceHistory()
+        }
+    }
+    
+    func clearPerformanceHistory() async {
+        try? fileManager.removeItem(at: performanceHistoryURL)
     }
 }

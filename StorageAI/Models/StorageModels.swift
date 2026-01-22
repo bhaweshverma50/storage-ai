@@ -213,12 +213,45 @@ struct ScanProgress {
     var scannedBytes: Int64
     var currentPath: String
     var phase: ScanPhase
+    var estimatedSecondsRemaining: TimeInterval?
+    var elapsedSeconds: TimeInterval
     
-    init(scannedFiles: Int = 0, scannedBytes: Int64 = 0, currentPath: String = "", phase: ScanPhase = .preparing) {
+    init(
+        scannedFiles: Int = 0,
+        scannedBytes: Int64 = 0,
+        currentPath: String = "",
+        phase: ScanPhase = .preparing,
+        estimatedSecondsRemaining: TimeInterval? = nil,
+        elapsedSeconds: TimeInterval = 0
+    ) {
         self.scannedFiles = scannedFiles
         self.scannedBytes = scannedBytes
         self.currentPath = currentPath
         self.phase = phase
+        self.estimatedSecondsRemaining = estimatedSecondsRemaining
+        self.elapsedSeconds = elapsedSeconds
+    }
+    
+    /// Format the estimated time remaining for display
+    var formattedTimeRemaining: String {
+        guard let remaining = estimatedSecondsRemaining, remaining > 0 else {
+            return "Calculating..."
+        }
+        
+        if remaining < 60 {
+            return "~\(Int(remaining)) sec"
+        } else if remaining < 3600 {
+            let minutes = Int(remaining / 60)
+            return "~\(minutes) min"
+        } else {
+            let hours = Int(remaining / 3600)
+            let minutes = Int((remaining.truncatingRemainder(dividingBy: 3600)) / 60)
+            if minutes > 0 {
+                return "~\(hours) hr \(minutes) min"
+            } else {
+                return "~\(hours) hr"
+            }
+        }
     }
 }
 

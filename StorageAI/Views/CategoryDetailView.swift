@@ -49,7 +49,7 @@ struct CategoryDetailView: View {
                 CategoryBentoCard(
                     bucket: bucket,
                     totalBytes: appState.scanService.summary.totalBytes,
-                    fileCount: appState.scanService.filesByCategory[bucket.category]?.count ?? 0
+                    fileCount: appState.scanService.fileCounts[bucket.category] ?? appState.scanService.filesByCategory[bucket.category]?.count ?? 0
                 ) {
                     selectedCategory = bucket.category
                 }

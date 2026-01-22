@@ -12,6 +12,7 @@ struct ScanUpdate {
     var currentPath: String
     var phase: ScanPhase
     var buckets: [StorageCategory: Int64]
+    var fileCounts: [StorageCategory: Int]  // File counts per category
 }
 
 /// Cancellation token for cooperative cancellation
@@ -47,6 +48,8 @@ enum FileIndexer {
         // Start with initial values if resuming, otherwise start fresh
         var buckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
         var filesByCategory = initialFiles ?? StorageCategory.allCases.reduce(into: [StorageCategory: [FileEntry]]()) { $0[$1] = [] }
+        // Track file counts per category
+        var categoryFileCounts: [StorageCategory: Int] = initialFiles?.mapValues { $0.count } ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
         var scannedFiles = initialScannedFiles
         var scannedBytes: Int64 = initialScannedBytes
         var lastProgressUpdate = Date()
@@ -59,7 +62,8 @@ enum FileIndexer {
             scannedBytes: 0,
             currentPath: "Starting scan...",
             phase: .preparing,
-            buckets: buckets
+            buckets: buckets,
+            fileCounts: categoryFileCounts
         ))
 
         for root in roots {
@@ -75,7 +79,8 @@ enum FileIndexer {
                 scannedBytes: scannedBytes,
                 currentPath: "Scanning: \(root.lastPathComponent)",
                 phase: phase,
-                buckets: buckets
+                buckets: buckets,
+                fileCounts: categoryFileCounts
             ))
             
             // For Library folder, always include hidden files
@@ -152,6 +157,7 @@ enum FileIndexer {
 
                     let category = StorageClassifier.category(for: url)
                     buckets[category, default: 0] += size
+                    categoryFileCounts[category, default: 0] += 1  // Track file count per category
 
                     // Store files larger than 1MB for display, with max limit per category
                     let maxFilesPerCategory = 1000
@@ -187,7 +193,8 @@ enum FileIndexer {
                             scannedBytes: scannedBytes,
                             currentPath: url.path,
                             phase: phase,
-                            buckets: buckets
+                            buckets: buckets,
+                            fileCounts: categoryFileCounts
                         ))
                     }
                 } catch {
@@ -203,7 +210,8 @@ enum FileIndexer {
             scannedBytes: scannedBytes,
             currentPath: "Finishing up...",
             phase: .analyzing,
-            buckets: buckets
+            buckets: buckets,
+            fileCounts: categoryFileCounts
         ))
         
         let bucketList = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: buckets[$0, default: 0]) }

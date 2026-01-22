@@ -11,6 +11,7 @@ enum ScanState: String, Codable {
 final class ScanService: ObservableObject {
     @Published private(set) var summary: StorageSummary
     @Published private(set) var filesByCategory: [StorageCategory: [FileEntry]] = [:]
+    @Published private(set) var fileCounts: [StorageCategory: Int] = [:]
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
     @Published private(set) var lastError: String?
@@ -25,7 +26,15 @@ final class ScanService: ObservableObject {
     private var scanStartTime: Date?
     private var lastPeriodicSaveTime: Date?
     
+    // Time estimation properties
+    private var performanceHistory: ScanDataStore.ScanPerformanceHistory?
+    private var pausedDuration: TimeInterval = 0
+    private var lastPauseTime: Date?
+    private var totalExpectedBytes: Int64 = 0
+    private var resumeElapsedTime: TimeInterval = 0  // Time elapsed before pause for resume
+    
     private let periodicSaveInterval: TimeInterval = 60 // Save every 60 seconds
+    private let defaultScanSpeed: Double = 50_000_000  // 50 MB/s default estimate
     
     var scanButtonTitle: String {
         switch scanState {
@@ -39,10 +48,77 @@ final class ScanService: ObservableObject {
         let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
         self.summary = StorageSummary(buckets: initialBuckets)
 
-        // Load cache immediately on init
+        // Load cache and performance history immediately on init
         Task { @MainActor in
             await self.loadCachedData()
+            await self.loadPerformanceHistory()
         }
+    }
+    
+    // MARK: - Performance History
+    
+    private func loadPerformanceHistory() async {
+        performanceHistory = await ScanDataStore.shared.loadPerformanceHistory()
+    }
+    
+    private func savePerformanceHistory(totalBytes: Int64, durationSeconds: Double) {
+        Task.detached(priority: .background) {
+            var history = await ScanDataStore.shared.loadPerformanceHistory()
+            history.recordScan(bytesScanned: totalBytes, durationSeconds: durationSeconds)
+            try? await ScanDataStore.shared.savePerformanceHistory(history)
+        }
+    }
+    
+    // MARK: - Time Estimation
+    
+    private func calculateEstimatedTimeRemaining(
+        scannedBytes: Int64,
+        elapsedSeconds: TimeInterval
+    ) -> TimeInterval? {
+        // Need some data to estimate
+        guard scannedBytes > 0, elapsedSeconds > 1 else { return nil }
+        
+        // Calculate current scan speed
+        let currentSpeed = Double(scannedBytes) / elapsedSeconds
+        guard currentSpeed > 0 else { return nil }
+        
+        // Blend with historical data if available
+        let effectiveSpeed: Double
+        if let history = performanceHistory, history.completedScans > 0 {
+            // 70% historical, 30% current - gives stability while adapting
+            effectiveSpeed = (history.averageBytesPerSecond * 0.7) + (currentSpeed * 0.3)
+        } else {
+            // First scan - use current speed with some smoothing toward default
+            effectiveSpeed = (defaultScanSpeed * 0.3) + (currentSpeed * 0.7)
+        }
+        
+        // Estimate remaining bytes
+        let remainingBytes = max(0, totalExpectedBytes - scannedBytes)
+        
+        // Calculate time remaining
+        let timeRemaining = Double(remainingBytes) / effectiveSpeed
+        
+        // Sanity check - cap at 24 hours
+        return min(timeRemaining, 24 * 3600)
+    }
+    
+    private func getInitialTimeEstimate() -> TimeInterval? {
+        guard totalExpectedBytes > 0 else { return nil }
+        
+        let estimatedSpeed: Double
+        if let history = performanceHistory, history.completedScans > 0 {
+            estimatedSpeed = history.averageBytesPerSecond
+        } else {
+            estimatedSpeed = defaultScanSpeed
+        }
+        
+        return Double(totalExpectedBytes) / estimatedSpeed
+    }
+    
+    private func getEffectiveElapsedTime() -> TimeInterval {
+        guard let startTime = scanStartTime else { return 0 }
+        let totalElapsed = Date().timeIntervalSince(startTime)
+        return totalElapsed - pausedDuration + resumeElapsedTime
     }
     
     // MARK: - Load Cached Data
@@ -58,12 +134,15 @@ final class ScanService: ObservableObject {
             if let cached = try await ScanDataStore.shared.load() {
                 self.summary = cached.summary
                 self.filesByCategory = cached.filesByCategory
+                self.fileCounts = cached.fileCounts
                 self.lastScanDate = cached.metadata.lastScanDate
                 self.progress = ScanProgress(
                     scannedFiles: cached.metadata.totalFilesScanned,
                     scannedBytes: cached.metadata.totalBytesScanned,
                     currentPath: "",
-                    phase: .complete
+                    phase: .complete,
+                    estimatedSecondsRemaining: nil,
+                    elapsedSeconds: cached.metadata.scanDurationSeconds
                 )
                 // Load scan state from cache
                 self.scanState = cached.metadata.scanState
@@ -100,9 +179,31 @@ final class ScanService: ObservableObject {
         lastError = nil
         scanStartTime = Date()
         
+        // Reset pause tracking
+        pausedDuration = 0
+        lastPauseTime = nil
+        
+        // Calculate total expected bytes (disk used space as estimate)
+        totalExpectedBytes = summary.diskInfo.usedSpace
+        
+        // Handle resume elapsed time
+        if isResume {
+            // Preserve the elapsed time from before pause
+            resumeElapsedTime = progress.elapsedSeconds
+        } else {
+            resumeElapsedTime = 0
+        }
+        
+        // Get initial time estimate
+        let initialEstimate = getInitialTimeEstimate()
+        
         // Only reset progress for fresh scans
         if !isResume {
-            progress = ScanProgress(phase: .preparing)
+            progress = ScanProgress(
+                phase: .preparing,
+                estimatedSecondsRemaining: initialEstimate,
+                elapsedSeconds: 0
+            )
             let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
             summary = StorageSummary(buckets: initialBuckets)
             filesByCategory = [:]
@@ -112,7 +213,9 @@ final class ScanService: ObservableObject {
                 scannedFiles: progress.scannedFiles,
                 scannedBytes: progress.scannedBytes,
                 currentPath: "Resuming scan...",
-                phase: .preparing
+                phase: .preparing,
+                estimatedSecondsRemaining: initialEstimate,
+                elapsedSeconds: resumeElapsedTime
             )
         }
         
@@ -153,11 +256,21 @@ final class ScanService: ObservableObject {
                             // Update progress AND summary on main actor
                             Task { @MainActor in
                                 guard let self = self, !token.isCancelled else { return }
+                                
+                                // Calculate elapsed time and estimate
+                                let elapsed = self.getEffectiveElapsedTime()
+                                let estimate = self.calculateEstimatedTimeRemaining(
+                                    scannedBytes: update.scannedBytes,
+                                    elapsedSeconds: elapsed
+                                )
+                                
                                 self.progress = ScanProgress(
                                     scannedFiles: update.scannedFiles,
                                     scannedBytes: update.scannedBytes,
                                     currentPath: update.currentPath,
-                                    phase: update.phase
+                                    phase: update.phase,
+                                    estimatedSecondsRemaining: estimate,
+                                    elapsedSeconds: elapsed
                                 )
                                 
                                 // Update summary buckets in real-time
@@ -165,6 +278,9 @@ final class ScanService: ObservableObject {
                                     StorageBucket(category: $0, bytes: update.buckets[$0, default: 0]) 
                                 }
                                 self.summary = StorageSummary(buckets: bucketList)
+                                
+                                // Update file counts in real-time
+                                self.fileCounts = update.fileCounts
                             }
                         },
                         initialBuckets: resumeInitialBuckets,
@@ -196,13 +312,27 @@ final class ScanService: ObservableObject {
                 case .success(let scanResult):
                     self.summary = StorageSummary(buckets: scanResult.buckets)
                     self.filesByCategory = scanResult.filesByCategory
+                    // Update file counts from actual scan results
+                    self.fileCounts = Dictionary(uniqueKeysWithValues: scanResult.filesByCategory.map { ($0.key, $0.value.count) })
                     self.lastScanDate = Date()
                     self.scanState = .complete  // Mark as complete scan
+                    
+                    // Calculate final elapsed time
+                    let finalElapsed = self.getEffectiveElapsedTime()
+                    
                     self.progress = ScanProgress(
                         scannedFiles: self.progress.scannedFiles,
                         scannedBytes: self.progress.scannedBytes,
                         currentPath: "",
-                        phase: .complete
+                        phase: .complete,
+                        estimatedSecondsRemaining: 0,
+                        elapsedSeconds: finalElapsed
+                    )
+                    
+                    // Save performance history for future estimates
+                    self.savePerformanceHistory(
+                        totalBytes: self.progress.scannedBytes,
+                        durationSeconds: finalElapsed
                     )
                     
                     // Save final result to cache
@@ -235,18 +365,23 @@ final class ScanService: ObservableObject {
         // Mark as partial scan
         scanState = .partial
         
+        // Calculate elapsed time to preserve for resume
+        let elapsedTime = getEffectiveElapsedTime()
+        
         // Save current progress before stopping
         if summary.totalBytes > 0 {
             saveCurrentProgress()
         }
         
-        // Update state
+        // Update state - preserve elapsed time for resume
         isScanning = false
         progress = ScanProgress(
             scannedFiles: progress.scannedFiles,
             scannedBytes: progress.scannedBytes,
             currentPath: "",
-            phase: .complete
+            phase: .complete,
+            estimatedSecondsRemaining: nil,
+            elapsedSeconds: elapsedTime
         )
     }
     
@@ -295,7 +430,9 @@ final class ScanService: ObservableObject {
             scannedFiles: max(0, progress.scannedFiles - removed.count),
             scannedBytes: max(0, progress.scannedBytes - removedBytes),
             currentPath: progress.currentPath,
-            phase: progress.phase
+            phase: progress.phase,
+            estimatedSecondsRemaining: progress.estimatedSecondsRemaining,
+            elapsedSeconds: progress.elapsedSeconds
         )
     }
     

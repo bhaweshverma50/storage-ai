@@ -90,142 +90,132 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - Menu Bar View
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
-    @Environment(\.openWindow) private var openWindow
+    
+    private let labelWidth: CGFloat = 70
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Image(systemName: "externaldrive")
-                    .font(.title3)
-                Text("Storage AI")
-                    .font(.headline)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            
-            Divider()
-            
-            // Disk Info
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Disk Storage")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                
-                HStack {
-                    Text("Used:")
-                    Spacer()
-                    Text(Formatters.bytes(appState.scanService.summary.diskInfo.usedSpace))
-                        .fontWeight(.medium)
-                }
-                .font(.caption)
-                
-                HStack {
-                    Text("Available:")
-                    Spacer()
-                    Text(Formatters.bytes(appState.scanService.summary.diskInfo.freeSpace))
-                        .fontWeight(.medium)
-                        .foregroundStyle(.green)
-                }
-                .font(.caption)
-                
-                // Progress bar
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.secondary.opacity(0.2))
-                        
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(diskColor)
-                            .frame(width: geo.size.width * diskPercentage)
-                    }
-                }
-                .frame(height: 4)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            
-            Divider()
-            
-            // Scanned Data Summary
-            if appState.scanService.summary.totalBytes > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Last Scan")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
+            // Disk Storage Card - Clickable
+            MenuBarClickableSection {
+                openApp()
+            } content: {
+                VStack(spacing: 12) {
+                    // Header with disk name and usage
                     HStack {
-                        Text("Scanned:")
+                        Image(systemName: "internaldrive.fill")
+                            .font(.system(size: 16))
+                        
+                        Text("Macintosh HD")
+                            .font(.system(size: 13, weight: .semibold))
+                        
                         Spacer()
-                        Text(Formatters.bytes(appState.scanService.summary.totalBytes))
-                            .fontWeight(.medium)
+                        
+                        Text("\(Int(diskPercentage * 100))%")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundColor(diskColor)
                     }
-                    .font(.caption)
                     
-                    if let lastScan = appState.scanService.lastScanDate {
-                        HStack {
-                            Text("Date:")
-                            Spacer()
-                            Text(Formatters.relativeDate(lastScan))
-                                .foregroundStyle(.secondary)
+                    // Progress bar
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.primary.opacity(0.15))
+                            
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(diskColor)
+                                .frame(width: max(0, geo.size.width * diskPercentage))
                         }
-                        .font(.caption)
                     }
+                    .frame(height: 8)
+                    
+                    // Storage details - aligned rows
+                    VStack(spacing: 6) {
+                        storageRow(label: "Used", value: Formatters.bytes(appState.scanService.summary.diskInfo.usedSpace))
+                        storageRow(label: "Available", value: Formatters.bytes(appState.scanService.summary.diskInfo.freeSpace), valueColor: Color(red: 0.2, green: 0.7, blue: 0.3))
+                        storageRow(label: "Total", value: Formatters.bytes(appState.scanService.summary.diskInfo.totalSpace))
+                    }
+                    .font(.system(size: 12))
+                }
+            }
+            .padding(12)
+            
+            Divider()
+            
+            // Last scan info - Clickable
+            if appState.scanService.summary.totalBytes > 0 {
+                MenuBarClickableSection {
+                    openApp()
+                } content: {
+                    VStack(spacing: 6) {
+                        storageRow(label: "Scanned", value: Formatters.bytes(appState.scanService.summary.totalBytes))
+                        
+                        if let lastScan = appState.scanService.lastScanDate {
+                            storageRow(label: "Updated", value: Formatters.relativeDate(lastScan))
+                        }
+                    }
+                    .font(.system(size: 12))
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 10)
                 
                 Divider()
             }
             
-            // Actions
-            Button {
-                NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.isVisible == false }) {
-                    window.makeKeyAndOrderFront(nil)
-                } else {
-                    // Open new window if none exists
-                    NSApp.windows.first?.makeKeyAndOrderFront(nil)
+            // Menu Actions
+            VStack(spacing: 0) {
+                MenuBarMenuItem(title: "Open Storage AI", icon: "macwindow") {
+                    openApp()
                 }
-            } label: {
-                Label("Open Storage AI", systemImage: "macwindow")
+                
+                MenuBarMenuItem(
+                    title: appState.scanService.isScanning ? "Scanning..." : appState.scanService.scanButtonTitle,
+                    icon: appState.scanService.isScanning ? "hourglass" : "arrow.triangle.2.circlepath",
+                    isDisabled: appState.scanService.isScanning
+                ) {
+                    startScan()
+                }
+                
+                Divider()
+                    .padding(.vertical, 4)
+                
+                MenuBarMenuItem(title: "Quit", icon: "power") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            
-            Button {
-                startScan()
-            } label: {
-                Label(appState.scanService.isScanning ? "Scanning..." : "Start Scan", systemImage: "arrow.clockwise")
-            }
-            .disabled(appState.scanService.isScanning)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            
-            Divider()
-            
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit Storage AI", systemImage: "power")
-            }
-            .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
         .frame(width: 220)
+    }
+    
+    private func storageRow(label: String, value: String, valueColor: Color = .primary) -> some View {
+        HStack {
+            Text(label)
+                .frame(width: labelWidth, alignment: .leading)
+            Text(value)
+                .fontWeight(.semibold)
+                .foregroundColor(valueColor)
+            Spacer()
+        }
     }
     
     private var diskPercentage: CGFloat {
         let total = appState.scanService.summary.diskInfo.totalSpace
         let used = appState.scanService.summary.diskInfo.usedSpace
         guard total > 0 else { return 0 }
-        return CGFloat(used) / CGFloat(total)
+        return min(1.0, CGFloat(used) / CGFloat(total))
     }
     
     private var diskColor: Color {
         if diskPercentage > 0.9 { return .red }
         if diskPercentage > 0.75 { return .orange }
         return .blue
+    }
+    
+    private func openApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first {
+            window.makeKeyAndOrderFront(nil)
+        }
     }
     
     private func startScan() {
@@ -240,6 +230,67 @@ struct MenuBarView: View {
         }
         
         appState.scanService.startScan(settings: appState.settings, roots: roots)
+    }
+}
+
+// MARK: - Clickable Section
+struct MenuBarClickableSection<Content: View>: View {
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        Button(action: action) {
+            content
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHovered ? Color.accentColor.opacity(0.1) : Color.clear)
+                .padding(-8)
+        )
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+// MARK: - Menu Bar Menu Item
+struct MenuBarMenuItem: View {
+    let title: String
+    let icon: String
+    var isDisabled: Bool = false
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .frame(width: 16)
+                
+                Text(title)
+                    .font(.system(size: 13))
+                
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(isHovered && !isDisabled ? Color.accentColor : Color.clear)
+            )
+            .foregroundColor(isHovered && !isDisabled ? .white : (isDisabled ? .secondary : .primary))
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 

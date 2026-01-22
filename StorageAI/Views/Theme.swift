@@ -381,6 +381,17 @@ struct ScanProgressCard: View {
                             .font(.system(size: 10 * fontScale))
                             .foregroundStyle(.secondary)
                     }
+                    
+                    // Time estimate
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(progress.formattedTimeRemaining)
+                            .font(.system(size: 14 * fontScale, weight: .semibold, design: .rounded))
+                            .foregroundStyle(accentTheme)
+                            .contentTransition(.numericText())
+                        Text("remaining")
+                            .font(.system(size: 10 * fontScale))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }

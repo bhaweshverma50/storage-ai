@@ -8,7 +8,7 @@ set -e
 # Configuration
 APP_NAME="Storage AI"
 BUNDLE_NAME="StorageAI"
-VERSION="1.9.0"
+VERSION="2.0.0"
 DMG_NAME="StorageAI-${VERSION}"
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"
@@ -48,9 +48,9 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.storageai.app</string>
     <key>CFBundleVersion</key>
-    <string>15</string>
+    <string>16</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.9.0</string>
+    <string>2.0.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>

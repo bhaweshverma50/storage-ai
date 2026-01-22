@@ -187,6 +187,22 @@ struct DashboardView: View {
         guard appState.scanService.summary.totalBytes > 0 else {
             return
         }
+        
+        // Try to load cached apps first
+        do {
+            if let cachedApps = try await ScanDataStore.shared.loadApps(), !cachedApps.isEmpty {
+                await MainActor.run {
+                    topApps = cachedApps.sorted { $0.totalBytes > $1.totalBytes }
+                }
+                // Also load cleanup targets in background
+                await loadCleanupTargets()
+                return
+            }
+        } catch {
+            print("Failed to load cached apps: \(error)")
+        }
+        
+        // If no cached apps, compute fresh
         await loadAppData()
     }
     
@@ -196,10 +212,26 @@ struct DashboardView: View {
         let apps = await Task.detached {
             AppAttribution.analyzeApps()
                 .sorted { $0.totalBytes > $1.totalBytes }
-                .prefix(20)
+                .prefix(50)
                 .map { $0 }
         }.value
         
+        // Save apps to cache
+        do {
+            try await ScanDataStore.shared.saveApps(Array(apps))
+        } catch {
+            print("Failed to save apps cache: \(error)")
+        }
+        
+        await loadCleanupTargets()
+        
+        await MainActor.run {
+            topApps = Array(apps)
+            isLoadingApps = false
+        }
+    }
+    
+    private func loadCleanupTargets() async {
         let targets = await Task.detached {
             let service = CleanupService()
             service.buildTargets()
@@ -207,9 +239,7 @@ struct DashboardView: View {
         }.value
         
         await MainActor.run {
-            topApps = apps
             cleanupTargets = targets
-            isLoadingApps = false
         }
     }
     
@@ -538,15 +568,29 @@ struct OverviewView: View {
                             } else {
                                 ScrollView {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        ForEach(Array(recs.prefix(5).enumerated()), id: \.offset) { _, rec in
-                                            HStack(alignment: .top, spacing: 8) {
-                                                Circle()
-                                                    .fill(Color.blue)
-                                                    .frame(width: 5, height: 5)
-                                                    .padding(.top, 6)
+                                        ForEach(Array(recs.prefix(6).enumerated()), id: \.offset) { index, rec in
+                                            // Check if this is an intro line (not an actual recommendation)
+                                            let isIntroLine = index == 0 && (
+                                                rec.lowercased().contains("here are") ||
+                                                rec.lowercased().contains("based on") ||
+                                                rec.lowercased().contains("recommendations:")
+                                            )
+                                            
+                                            if isIntroLine {
                                                 Text(rec)
                                                     .font(.system(size: 12 * fontScale))
+                                                    .foregroundStyle(.secondary)
                                                     .fixedSize(horizontal: false, vertical: true)
+                                            } else {
+                                                HStack(alignment: .top, spacing: 8) {
+                                                    Circle()
+                                                        .fill(Color.blue)
+                                                        .frame(width: 5, height: 5)
+                                                        .padding(.top, 6)
+                                                    Text(rec)
+                                                        .font(.system(size: 12 * fontScale))
+                                                        .fixedSize(horizontal: false, vertical: true)
+                                                }
                                             }
                                         }
                                     }

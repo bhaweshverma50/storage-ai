@@ -8,6 +8,7 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-Native-purple?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-2.0.0-brightgreen?style=for-the-badge)](../../releases/latest)
 
 <br/>
 
@@ -30,8 +31,10 @@
 ### 🔍 Smart Scanning
 - **Lightning-fast** file system analysis
 - **Intelligent categorization** into 6 categories
-- **Real-time progress** with live updates
-- **Resume capability** - pause and continue anytime
+- **Real-time progress** with live file counts & sizes
+- **Time estimation** - shows remaining scan time
+- **Pause & Resume** - continue scans anytime
+- **Auto-save** - progress saved every 60 seconds
 
 </td>
 <td width="50%">
@@ -41,6 +44,7 @@
 - **6 accent color themes** to match your style
 - **Light/Dark mode** support
 - **Adjustable font sizes** for accessibility
+- **Menu bar extra** - quick disk status at a glance
 
 </td>
 </tr>
@@ -52,6 +56,7 @@
 - **Cache cleaning** for apps and system
 - **Xcode cleanup** (derived data, archives)
 - **Log file** management
+- **One-click cleanup** with size estimates
 
 </td>
 <td width="50%">
@@ -65,6 +70,18 @@
 </td>
 </tr>
 </table>
+
+## 🆕 What's New in v2.0.0
+
+- **⏱️ Time Estimation** - See estimated time remaining during scans
+- **📊 Live File Counts** - Real-time file counts per category while scanning
+- **⏸️ Pause & Resume** - Stop scans and continue where you left off
+- **💾 Auto-Save Progress** - Scan progress saved automatically every 60 seconds
+- **📈 Smart Estimates** - Time estimates improve based on historical scan data
+- **🖥️ Menu Bar Extra** - Quick access to disk usage from the menu bar
+- **🎯 Clickable Sections** - Menu bar items open relevant app pages
+- **🔧 Improved Caching** - Applications and cleanup data persist across restarts
+- **🎨 Better UI** - Refined category cards with accurate file counts
 
 ## 📸 Screenshots
 
