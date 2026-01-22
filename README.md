@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="dmg-assets/macos-icons/AppIcon.icns" width="128" height="128" alt="Storage AI Icon">
-
 # Storage AI
 
 ### Intelligent Disk Space Analyzer for macOS
@@ -92,13 +90,6 @@
 
 <div align="center">
 
-### Overview Dashboard
-<img src="dmg-assets/screenshots/overview-dashboard.png" width="800" alt="Overview Dashboard">
-
-*The main dashboard showing storage distribution, categories, recommendations, and largest apps at a glance.*
-
----
-
 ### Categories View
 <img src="dmg-assets/screenshots/categories-view.png" width="800" alt="Categories View">
 
@@ -106,45 +97,38 @@
 
 ---
 
-### Applications View
-<img src="dmg-assets/screenshots/applications-view.png" width="800" alt="Applications View">
-
-*View all installed applications sorted by size with search and filtering options.*
-
----
-
-### App Details & Cleanup
-<img src="dmg-assets/screenshots/app-detail-sheet.png" width="800" alt="App Details Sheet">
-
-*Click any app to see detailed storage breakdown and cleanup options - clean cache, remove data, or uninstall.*
-
----
-
 ### Cleanup View
-<img src="dmg-assets/screenshots/cleanup-view.png" width="800" alt="Cleanup View">
+<img src="dmg-assets/screenshots/applications-view.png" width="800" alt="Applications View">
 
 *Identify and clean up caches, logs, Xcode data, and other recoverable space.*
 
 ---
 
-### Settings
-<img src="dmg-assets/screenshots/settings-view.png" width="800" alt="Settings View">
+### Overview
+<img src="dmg-assets/screenshots/app-detail-sheet.png" width="800" alt="App Details Sheet">
+
+*Quick access to disk usage and storage breakdown and everything else here*
+
+---
+
+### Settings View
+<img src="dmg-assets/screenshots/cleanup-view.png" width="800" alt="Cleanup View">
 
 *Customize themes, font sizes, and configure AI-powered recommendations with Ollama.*
 
 ---
 
-### Menu Bar Extra
-<img src="dmg-assets/screenshots/menubar-extra.png" width="400" alt="Menu Bar Extra">
-
-*Quick access to disk usage and storage breakdown from your menu bar.*
+### AI Options
+<img src="dmg-assets/screenshots/settings-view.png" width="800" alt="Settings View">
 
 ---
 
-### Onboarding
-<img src="dmg-assets/screenshots/onboarding.png" width="600" alt="Onboarding">
+### Application details
+<img src="dmg-assets/screenshots/menubar-extra.png" width="400" alt="Menu Bar Extra">
 
-*Easy setup wizard to configure permissions and optional AI features.*
+*Click any app to see detailed storage breakdown and cleanup options - clean cache, remove data, or uninstall.*
+
+---
 
 </div>
 
