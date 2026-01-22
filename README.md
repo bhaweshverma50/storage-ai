@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="dmg-assets/macos-icons/AppIcon.icns" width="128" height="128" alt="Storage AI Icon">
+
 # Storage AI
 
 ### Intelligent Disk Space Analyzer for macOS
@@ -8,7 +10,7 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-Native-purple?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0.0-brightgreen?style=for-the-badge)](../../releases/latest)
+[![Version](https://img.shields.io/badge/Version-2.4.0-brightgreen?style=for-the-badge)](../../releases/latest)
 
 <br/>
 
@@ -57,11 +59,13 @@
 - **Xcode cleanup** (derived data, archives)
 - **Log file** management
 - **One-click cleanup** with size estimates
+- **App-specific cleanup** - clean cache, data, or uninstall
 
 </td>
 <td width="50%">
 
 ### 🤖 AI-Powered (Optional)
+- **Auto-setup Ollama** on first launch
 - **Local Ollama** integration
 - **Smart recommendations** for what to delete
 - **Privacy-first** - all processing stays on device
@@ -71,22 +75,77 @@
 </tr>
 </table>
 
-## 🆕 What's New in v2.0.0
+## 🆕 What's New in v2.4.0
 
+- **🧹 App Cleanup Actions** - Clean cache, remove app data, or uninstall apps directly from app details
+- **👆 Clickable App Rows** - Click anywhere on an application row to see details
+- **🎨 Custom App Icon** - Beautiful new app icon for Storage AI
+- **⚡ Auto Ollama Setup** - Automatic download, install, and model setup for AI features
+- **🔧 Bug Fixes** - Fixed applications and cleanup data loading from cache on restart
 - **⏱️ Time Estimation** - See estimated time remaining during scans
 - **📊 Live File Counts** - Real-time file counts per category while scanning
 - **⏸️ Pause & Resume** - Stop scans and continue where you left off
 - **💾 Auto-Save Progress** - Scan progress saved automatically every 60 seconds
-- **📈 Smart Estimates** - Time estimates improve based on historical scan data
 - **🖥️ Menu Bar Extra** - Quick access to disk usage from the menu bar
-- **🎯 Clickable Sections** - Menu bar items open relevant app pages
-- **🔧 Improved Caching** - Applications and cleanup data persist across restarts
-- **🎨 Better UI** - Refined category cards with accurate file counts
 
 ## 📸 Screenshots
 
 <div align="center">
-<i>Coming soon - beautiful screenshots of Storage AI in action</i>
+
+### Overview Dashboard
+<img src="dmg-assets/screenshots/overview-dashboard.png" width="800" alt="Overview Dashboard">
+
+*The main dashboard showing storage distribution, categories, recommendations, and largest apps at a glance.*
+
+---
+
+### Categories View
+<img src="dmg-assets/screenshots/categories-view.png" width="800" alt="Categories View">
+
+*Drill down into each storage category to see detailed file breakdowns.*
+
+---
+
+### Applications View
+<img src="dmg-assets/screenshots/applications-view.png" width="800" alt="Applications View">
+
+*View all installed applications sorted by size with search and filtering options.*
+
+---
+
+### App Details & Cleanup
+<img src="dmg-assets/screenshots/app-detail-sheet.png" width="800" alt="App Details Sheet">
+
+*Click any app to see detailed storage breakdown and cleanup options - clean cache, remove data, or uninstall.*
+
+---
+
+### Cleanup View
+<img src="dmg-assets/screenshots/cleanup-view.png" width="800" alt="Cleanup View">
+
+*Identify and clean up caches, logs, Xcode data, and other recoverable space.*
+
+---
+
+### Settings
+<img src="dmg-assets/screenshots/settings-view.png" width="800" alt="Settings View">
+
+*Customize themes, font sizes, and configure AI-powered recommendations with Ollama.*
+
+---
+
+### Menu Bar Extra
+<img src="dmg-assets/screenshots/menubar-extra.png" width="400" alt="Menu Bar Extra">
+
+*Quick access to disk usage and storage breakdown from your menu bar.*
+
+---
+
+### Onboarding
+<img src="dmg-assets/screenshots/onboarding.png" width="600" alt="Onboarding">
+
+*Easy setup wizard to configure permissions and optional AI features.*
+
 </div>
 
 ## 🚀 Installation
@@ -117,9 +176,10 @@ swift build -c release
 ### First Launch
 
 1. **Grant Permissions** - Storage AI needs Full Disk Access to scan your files
-2. **Start Scan** - Click the scan button to analyze your disk
-3. **Explore Categories** - Click any category to see detailed file lists
-4. **Clean Up** - Use the cleanup tools to reclaim space
+2. **Optional AI Setup** - Enable Ollama for smart recommendations (auto-installs if needed)
+3. **Start Scan** - Click the scan button to analyze your disk
+4. **Explore Categories** - Click any category to see detailed file lists
+5. **Clean Up** - Use the cleanup tools to reclaim space
 
 ### File Categories
 
@@ -134,19 +194,24 @@ swift build -c release
 
 ### AI Recommendations (Optional)
 
-To enable AI-powered recommendations:
+Storage AI can automatically set up Ollama for you:
 
+1. Go to **Settings** or enable during onboarding
+2. Click **Set Up Ollama** 
+3. Storage AI will download, install, and configure Ollama automatically
+4. Get intelligent cleanup suggestions powered by local AI
+
+Or manually install:
 1. Install [Ollama](https://ollama.ai) on your Mac
 2. Pull a model: `ollama pull llama3.2`
 3. Enable Ollama in Storage AI Settings
-4. Get intelligent cleanup suggestions
 
 ## 🛠 Requirements
 
 - **macOS 14.0+** (Sonoma or later)
 - **Apple Silicon or Intel** Mac
 - **Full Disk Access** permission
-- **Optional:** Ollama for AI features
+- **Optional:** ~4GB disk space for Ollama AI features
 
 ## 🏗 Architecture
 
@@ -160,12 +225,15 @@ StorageAI/
 │   ├── FileIndexer.swift     # File system traversal
 │   ├── ScanDataStore.swift   # Persistence layer
 │   ├── CleanupService.swift  # Cleanup operations
-│   └── OllamaClient.swift    # AI integration
+│   ├── OllamaClient.swift    # AI integration
+│   └── OllamaSetupService.swift # Auto AI setup
 └── Views/
     ├── DashboardView.swift   # Main interface
     ├── CategoryDetailView.swift
+    ├── AppDetailView.swift   # App details & cleanup
     ├── CleanupView.swift
-    └── SettingsView.swift
+    ├── SettingsView.swift
+    └── OllamaSetupSheet.swift
 ```
 
 ### Key Technologies

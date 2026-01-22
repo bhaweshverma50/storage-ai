@@ -236,66 +236,76 @@ struct StatBentoCard: View {
 struct AppListRow: View {
     let app: AppEntry
     let action: () -> Void
+    @State private var isHovered = false
     
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                // App Icon
-                if let icon = app.iconImage {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .frame(width: 40, height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 9))
-                } else {
-                    RoundedRectangle(cornerRadius: 9)
-                        .fill(Color.secondary.opacity(0.15))
-                        .frame(width: 40, height: 40)
-                        .overlay {
-                            Image(systemName: "app")
-                                .foregroundStyle(.secondary)
-                        }
-                }
-                
-                // App Info
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(app.name)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                    
-                    if let bundleId = app.bundleIdentifier {
-                        Text(bundleId)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
+        HStack(spacing: 12) {
+            // App Icon
+            if let icon = app.iconImage {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+            } else {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        Image(systemName: "app")
+                            .foregroundStyle(.secondary)
                     }
-                }
+            }
+            
+            // App Info
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
                 
-                Spacer()
-                
-                // Size breakdown
-                HStack(spacing: 20) {
-                    SizeLabel(title: "Bundle", size: app.bundleSizeBytes, color: .blue)
-                    SizeLabel(title: "Cache", size: app.cacheSizeBytes, color: .orange)
-                    SizeLabel(title: "Data", size: app.supportSizeBytes + app.containerSizeBytes, color: .purple)
-                }
-                
-                // Total
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(Formatters.bytes(app.totalBytes))
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                    Text("Total")
+                if let bundleId = app.bundleIdentifier {
+                    Text(bundleId)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
-                .frame(width: 80)
-                
-                Image(systemName: "chevron.right")
-                    .font(.caption)
+            }
+            
+            Spacer()
+            
+            // Size breakdown
+            HStack(spacing: 20) {
+                SizeLabel(title: "Bundle", size: app.bundleSizeBytes, color: .blue)
+                SizeLabel(title: "Cache", size: app.cacheSizeBytes, color: .orange)
+                SizeLabel(title: "Data", size: app.supportSizeBytes + app.containerSizeBytes, color: .purple)
+            }
+            
+            // Total
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(Formatters.bytes(app.totalBytes))
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                Text("Total")
+                    .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            .padding(.vertical, 10)
+            .frame(width: 80)
+            
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 4)
+        .background(isHovered ? Color.primary.opacity(0.05) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            action()
+        }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
     }
 }
 
@@ -321,7 +331,15 @@ struct SizeLabel: View {
 // MARK: - App Detail Sheet
 struct AppDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accentTheme) private var accentTheme
     let app: AppEntry
+    
+    @State private var showCleanCacheAlert = false
+    @State private var showRemoveDataAlert = false
+    @State private var showUninstallAlert = false
+    @State private var isProcessing = false
+    @State private var operationResult: String?
+    @State private var operationError: String?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -447,16 +465,303 @@ struct AppDetailSheet: View {
                             }
                         }
                     }
+                    
+                    // Cleanup Section
+                    BentoCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Cleanup")
+                                .font(.subheadline.weight(.medium))
+                            
+                            // Result/Error messages
+                            if let result = operationResult {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                    Text(result)
+                                        .font(.caption)
+                                        .foregroundStyle(.green)
+                                }
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            
+                            if let error = operationError {
+                                HStack {
+                                    Image(systemName: "exclamationmark.circle.fill")
+                                        .foregroundStyle(.red)
+                                    Text(error)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            
+                            // Clean Cache
+                            if app.cacheSizeBytes > 0 {
+                                cleanupRow(
+                                    icon: "trash",
+                                    iconColor: .orange,
+                                    title: "Clean Cache",
+                                    description: "Remove cached files only",
+                                    size: app.cacheSizeBytes,
+                                    action: { showCleanCacheAlert = true }
+                                )
+                            }
+                            
+                            // Remove App Data
+                            if app.cleanableBytes > 0 {
+                                cleanupRow(
+                                    icon: "folder.badge.minus",
+                                    iconColor: .purple,
+                                    title: "Remove App Data",
+                                    description: "Remove cache, containers & support files",
+                                    size: app.supportSizeBytes + app.cacheSizeBytes + app.containerSizeBytes,
+                                    action: { showRemoveDataAlert = true }
+                                )
+                            }
+                            
+                            Divider()
+                            
+                            // Uninstall App
+                            cleanupRow(
+                                icon: "trash.fill",
+                                iconColor: .red,
+                                title: "Uninstall App",
+                                description: "Move app to Trash and remove all data",
+                                size: app.totalBytes,
+                                isDestructive: true,
+                                action: { showUninstallAlert = true }
+                            )
+                        }
+                    }
                 }
                 .padding(20)
             }
         }
-        .frame(width: 450, height: 420)
+        .frame(width: 450, height: 520)
+        .alert("Clean Cache", isPresented: $showCleanCacheAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clean", role: .destructive) { cleanCache() }
+        } message: {
+            Text("This will remove \(Formatters.bytes(app.cacheSizeBytes)) of cached data for \(app.name). The app will recreate cache as needed.")
+        }
+        .alert("Remove App Data", isPresented: $showRemoveDataAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) { removeAppData() }
+        } message: {
+            Text("This will remove all support files, cache, and container data for \(app.name). The app itself will remain installed but may need to be set up again.")
+        }
+        .alert("Uninstall \(app.name)?", isPresented: $showUninstallAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Uninstall", role: .destructive) { uninstallApp() }
+        } message: {
+            Text("This will move \(app.name) to Trash and remove all associated data (\(Formatters.bytes(app.totalBytes))). You can restore it from Trash if needed.")
+        }
+    }
+    
+    // MARK: - Cleanup Row
+    private func cleanupRow(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        description: String,
+        size: Int64,
+        isDestructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(iconColor)
+                .frame(width: 28, height: 28)
+                .background(iconColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.medium))
+                Text(description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            
+            Text(Formatters.bytes(size))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(iconColor)
+            
+            Button {
+                action()
+            } label: {
+                if isProcessing {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                } else {
+                    Text(isDestructive ? "Uninstall" : "Clean")
+                        .font(.caption.weight(.medium))
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(isDestructive ? .red : accentTheme)
+            .controlSize(.small)
+            .disabled(isProcessing)
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
     }
     
     private func proportion(_ bytes: Int64) -> CGFloat {
         guard app.totalBytes > 0 else { return 0 }
         return CGFloat(bytes) / CGFloat(app.totalBytes)
+    }
+    
+    // MARK: - Cleanup Actions
+    
+    private var cachePaths: [URL] {
+        guard let bundleId = app.bundleIdentifier else { return [] }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var paths: [URL] = []
+        
+        // ~/Library/Caches/{bundleIdentifier}
+        let caches = home.appendingPathComponent("Library/Caches/\(bundleId)")
+        if FileManager.default.fileExists(atPath: caches.path) {
+            paths.append(caches)
+        }
+        
+        return paths
+    }
+    
+    private var allDataPaths: [URL] {
+        guard let bundleId = app.bundleIdentifier else { return [] }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var paths: [URL] = []
+        
+        // ~/Library/Caches/{bundleIdentifier}
+        let caches = home.appendingPathComponent("Library/Caches/\(bundleId)")
+        if FileManager.default.fileExists(atPath: caches.path) {
+            paths.append(caches)
+        }
+        
+        // ~/Library/Application Support/{bundleIdentifier}
+        let support = home.appendingPathComponent("Library/Application Support/\(bundleId)")
+        if FileManager.default.fileExists(atPath: support.path) {
+            paths.append(support)
+        }
+        
+        // Also try app name for Application Support
+        let supportByName = home.appendingPathComponent("Library/Application Support/\(app.name)")
+        if FileManager.default.fileExists(atPath: supportByName.path) {
+            paths.append(supportByName)
+        }
+        
+        // ~/Library/Containers/{bundleIdentifier}
+        let containers = home.appendingPathComponent("Library/Containers/\(bundleId)")
+        if FileManager.default.fileExists(atPath: containers.path) {
+            paths.append(containers)
+        }
+        
+        // ~/Library/Preferences/{bundleIdentifier}.plist
+        let prefs = home.appendingPathComponent("Library/Preferences/\(bundleId).plist")
+        if FileManager.default.fileExists(atPath: prefs.path) {
+            paths.append(prefs)
+        }
+        
+        // ~/Library/Saved Application State/{bundleIdentifier}.savedState
+        let savedState = home.appendingPathComponent("Library/Saved Application State/\(bundleId).savedState")
+        if FileManager.default.fileExists(atPath: savedState.path) {
+            paths.append(savedState)
+        }
+        
+        return paths
+    }
+    
+    private func cleanCache() {
+        isProcessing = true
+        operationResult = nil
+        operationError = nil
+        
+        Task {
+            do {
+                var deletedCount = 0
+                for path in cachePaths {
+                    try FileManager.default.removeItem(at: path)
+                    deletedCount += 1
+                }
+                
+                await MainActor.run {
+                    isProcessing = false
+                    operationResult = "Cleaned cache successfully"
+                }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    operationError = error.localizedDescription
+                }
+            }
+        }
+    }
+    
+    private func removeAppData() {
+        isProcessing = true
+        operationResult = nil
+        operationError = nil
+        
+        Task {
+            do {
+                var deletedCount = 0
+                for path in allDataPaths {
+                    try FileManager.default.removeItem(at: path)
+                    deletedCount += 1
+                }
+                
+                await MainActor.run {
+                    isProcessing = false
+                    operationResult = "Removed \(deletedCount) data locations"
+                }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    operationError = error.localizedDescription
+                }
+            }
+        }
+    }
+    
+    private func uninstallApp() {
+        isProcessing = true
+        operationResult = nil
+        operationError = nil
+        
+        Task {
+            do {
+                // First remove app data
+                for path in allDataPaths {
+                    try? FileManager.default.removeItem(at: path)
+                }
+                
+                // Move app to trash
+                try FileManager.default.trashItem(at: app.bundleURL, resultingItemURL: nil)
+                
+                await MainActor.run {
+                    isProcessing = false
+                    operationResult = "\(app.name) uninstalled successfully"
+                    
+                    // Close sheet after a delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        dismiss()
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isProcessing = false
+                    operationError = error.localizedDescription
+                }
+            }
+        }
     }
 }
 

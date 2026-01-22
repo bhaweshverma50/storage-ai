@@ -12,8 +12,10 @@ struct SettingsView: View {
     @State private var showResetOnboardingAlert = false
     @State private var showClearCacheAlert = false
     @State private var showCacheCleared = false
+    @State private var showOllamaSetup = false
     
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accentTheme) private var accentTheme
     
     var body: some View {
         ScrollView {
@@ -256,10 +258,10 @@ struct SettingsView: View {
                     // Status indicator
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(isOllamaAvailable ? Color.green : Color.red)
+                            .fill(ollamaStatusColor)
                             .frame(width: 6, height: 6)
                         
-                        Text(isOllamaAvailable ? "Connected" : "Offline")
+                        Text(ollamaStatusText)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -275,40 +277,65 @@ struct SettingsView: View {
                     color: .cyan,
                     isOn: $appState.settings.ollamaEnabled
                 )
+                .onChange(of: appState.settings.ollamaEnabled) { _, newValue in
+                    if newValue {
+                        // Check status when enabled
+                        Task {
+                            let status = await appState.ollamaSetupService.checkStatus()
+                            if status != .ready {
+                                showOllamaSetup = true
+                            }
+                        }
+                    }
+                }
                 
                 if appState.settings.ollamaEnabled {
                     Divider()
                     
                     // Connection Info
                     VStack(alignment: .leading, spacing: 10) {
+                        // Status and Setup Button
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Connection")
+                                Text("Status")
                                     .font(.caption.weight(.medium))
                                 
-                                Text(isOllamaAvailable 
-                                     ? "localhost:11434" 
-                                     : "Start with 'ollama serve'")
+                                Text(ollamaDetailedStatus)
                                     .font(.caption2)
-                                    .foregroundStyle(isOllamaAvailable ? .green : .red)
+                                    .foregroundStyle(ollamaStatusColor)
                             }
                             
                             Spacer()
                             
-                            Button {
-                                Task { await checkOllamaStatus() }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
+                            // Action buttons based on status
+                            if appState.ollamaSetupService.status == .ready {
+                                Button {
+                                    Task { await checkOllamaStatus() }
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            } else {
+                                Button {
+                                    showOllamaSetup = true
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: setupButtonIcon)
+                                        Text(setupButtonTitle)
+                                    }
                                     .font(.caption)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
                         }
                         
-                        // Models
+                        // Models (only show if connected)
                         if !availableModels.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Models")
+                                Text("Available Models")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 
@@ -319,8 +346,8 @@ struct SettingsView: View {
                                                 .font(.caption2.weight(.medium))
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 4)
-                                                .background(Color.cyan.opacity(0.15))
-                                                .foregroundStyle(.cyan)
+                                                .background(accentTheme.opacity(0.15))
+                                                .foregroundStyle(accentTheme)
                                                 .clipShape(Capsule())
                                         }
                                     }
@@ -328,37 +355,43 @@ struct SettingsView: View {
                             }
                         }
                         
-                        // Test
-                        HStack {
-                            Button {
-                                Task { await testAI() }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    if isTestingAI {
-                                        ProgressView()
-                                            .scaleEffect(0.6)
+                        // Test (only show if ready)
+                        if appState.ollamaSetupService.status == .ready {
+                            HStack {
+                                Button {
+                                    Task { await testAI() }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        if isTestingAI {
+                                            ProgressView()
+                                                .scaleEffect(0.6)
+                                        }
+                                        Text(isTestingAI ? "Testing..." : "Test Connection")
+                                            .font(.caption)
                                     }
-                                    Text(isTestingAI ? "Testing..." : "Test Connection")
-                                        .font(.caption)
                                 }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .disabled(!isOllamaAvailable || isTestingAI)
-                            
-                            Spacer()
-                            
-                            if let aiTestMessage {
-                                Text(aiTestMessage)
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(isTestingAI)
+                                
+                                Spacer()
+                                
+                                if let aiTestMessage {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                        Text(aiTestMessage)
+                                            .foregroundStyle(.green)
+                                    }
                                     .font(.caption2)
-                                    .foregroundStyle(.green)
-                            }
-                            
-                            if let aiTestError {
-                                Text(aiTestError)
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
-                                    .lineLimit(1)
+                                }
+                                
+                                if let aiTestError {
+                                    Text(aiTestError)
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                        .lineLimit(1)
+                                }
                             }
                         }
                     }
@@ -366,6 +399,61 @@ struct SettingsView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
                 }
             }
+        }
+        .sheet(isPresented: $showOllamaSetup) {
+            OllamaSetupSheet()
+                .environmentObject(appState)
+        }
+        .onChange(of: showOllamaSetup) { _, isShowing in
+            if !isShowing {
+                // Refresh status when sheet closes
+                Task { await checkOllamaStatus() }
+            }
+        }
+    }
+    
+    private var ollamaStatusColor: Color {
+        switch appState.ollamaSetupService.status {
+        case .ready: return .green
+        case .runningNoModel: return .yellow
+        case .installedNotRunning: return .orange
+        case .notInstalled: return .red
+        }
+    }
+    
+    private var ollamaStatusText: String {
+        switch appState.ollamaSetupService.status {
+        case .ready: return "Ready"
+        case .runningNoModel: return "Model Required"
+        case .installedNotRunning: return "Not Running"
+        case .notInstalled: return "Not Installed"
+        }
+    }
+    
+    private var ollamaDetailedStatus: String {
+        switch appState.ollamaSetupService.status {
+        case .ready: return "Connected to localhost:11434"
+        case .runningNoModel: return "Running, but model not downloaded"
+        case .installedNotRunning: return "Installed, but not running"
+        case .notInstalled: return "Ollama not installed"
+        }
+    }
+    
+    private var setupButtonTitle: String {
+        switch appState.ollamaSetupService.status {
+        case .notInstalled: return "Set Up"
+        case .installedNotRunning: return "Start"
+        case .runningNoModel: return "Download Model"
+        case .ready: return "Ready"
+        }
+    }
+    
+    private var setupButtonIcon: String {
+        switch appState.ollamaSetupService.status {
+        case .notInstalled: return "arrow.down.circle"
+        case .installedNotRunning: return "play.fill"
+        case .runningNoModel: return "arrow.down.circle"
+        case .ready: return "checkmark"
         }
     }
     
@@ -445,6 +533,9 @@ struct SettingsView: View {
     
     // MARK: - Actions
     private func checkOllamaStatus() async {
+        // Update setup service status
+        _ = await appState.ollamaSetupService.checkStatus()
+        
         isOllamaAvailable = await OllamaClient.isAvailable()
         
         if isOllamaAvailable {

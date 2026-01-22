@@ -8,7 +8,7 @@ set -e
 # Configuration
 APP_NAME="Storage AI"
 BUNDLE_NAME="StorageAI"
-VERSION="2.0.0"
+VERSION="2.4.0"
 DMG_NAME="StorageAI-${VERSION}"
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"
@@ -48,9 +48,9 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>com.storageai.app</string>
     <key>CFBundleVersion</key>
-    <string>16</string>
+    <string>20</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.0</string>
+    <string>2.4.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -96,36 +96,18 @@ PLIST
 # Create PkgInfo
 echo -n "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
-# Create app icon
-echo "🎨 Creating app icon..."
-ICON_DIR="${APP_BUNDLE}/Contents/Resources/AppIcon.iconset"
-mkdir -p "${ICON_DIR}"
-
-# Use system icon as base and copy for each size
+# Copy app icon from assets
+echo "🎨 Setting app icon..."
+CUSTOM_ICON="${DMG_ASSETS}/macos-icons/AppIcon.icns"
 SYSTEM_ICON="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns"
 
-# Extract sizes from system icon or create colored squares
-for size in 16 32 128 256 512; do
-    # Try to extract from system icon
-    sips -s format png -z $size $size "${SYSTEM_ICON}" --out "${ICON_DIR}/icon_${size}x${size}.png" 2>/dev/null || {
-        # Fallback: create a simple colored PNG
-        echo "Creating fallback icon ${size}x${size}..."
-    }
-    
-    # Create @2x version
-    size2x=$((size * 2))
-    if [ $size -le 512 ]; then
-        sips -s format png -z $size2x $size2x "${SYSTEM_ICON}" --out "${ICON_DIR}/icon_${size}x${size}@2x.png" 2>/dev/null || true
-    fi
-done
-
-# Convert iconset to icns
-iconutil -c icns "${ICON_DIR}" -o "${APP_BUNDLE}/Contents/Resources/AppIcon.icns" 2>/dev/null || {
-    echo "Warning: Could not create icns, using fallback..."
-    # Copy system icon as fallback
+if [ -f "${CUSTOM_ICON}" ]; then
+    echo "Using custom app icon from dmg-assets/macos-icons/"
+    cp "${CUSTOM_ICON}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+else
+    echo "Custom icon not found, using system icon..."
     cp "${SYSTEM_ICON}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
-}
-rm -rf "${ICON_DIR}"
+fi
 
 # Prepare DMG staging area
 echo "📀 Preparing DMG..."
@@ -134,15 +116,15 @@ cp -R "${APP_BUNDLE}" "${DMG_STAGE}/"
 # Create Applications symlink
 ln -sf /Applications "${DMG_STAGE}/Applications"
 
-# Create DMG background image
+# Create DMG background image with white background and arrow
 echo "🎨 Creating DMG background..."
 cat > /tmp/create_bg.py << 'PYTHON'
 import os
 import struct
 import zlib
 
-def create_gradient_png(filename, width, height):
-    """Create a simple gradient PNG without external dependencies"""
+def create_dmg_background(filename, width, height):
+    """Create a white background with arrow indicator for DMG"""
     
     def png_chunk(chunk_type, data):
         chunk_len = len(data)
@@ -153,19 +135,44 @@ def create_gradient_png(filename, width, height):
     # PNG signature
     signature = b'\x89PNG\r\n\x1a\n'
     
-    # IHDR chunk
-    ihdr = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    # IHDR chunk (RGBA)
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
     
-    # Create image data with gradient
+    # Colors
+    bg_color = (250, 250, 252, 255)  # Soft white/light gray
+    arrow_color = (180, 180, 185, 255)  # Subtle gray arrow
+    text_color = (140, 140, 145, 255)  # Gray text
+    
+    # Create image data
     raw_data = b''
+    
+    # Arrow parameters
+    arrow_y_start = 175
+    arrow_y_end = 195
+    arrow_x_start = 285
+    arrow_x_end = 375
+    arrow_tip_x = 375
+    arrow_tip_size = 15
+    
     for y in range(height):
-        raw_data += b'\x00'  # Filter byte (none)
+        raw_data += b'\x00'  # Filter byte
         for x in range(width):
-            # Dark gradient from top-left to bottom-right
-            r = int(20 + (y / height) * 15 + (x / width) * 5)
-            g = int(25 + (y / height) * 20 + (x / width) * 5)
-            b = int(45 + (y / height) * 25 + (x / width) * 10)
-            raw_data += bytes([min(r, 255), min(g, 255), min(b, 255)])
+            # Default background
+            r, g, b, a = bg_color
+            
+            # Draw arrow shaft
+            if arrow_y_start <= y <= arrow_y_end and arrow_x_start <= x <= arrow_x_end - arrow_tip_size:
+                r, g, b, a = arrow_color
+            
+            # Draw arrow head (triangle pointing right)
+            if arrow_x_end - arrow_tip_size <= x <= arrow_x_end:
+                arrow_center_y = (arrow_y_start + arrow_y_end) // 2
+                tip_progress = (x - (arrow_x_end - arrow_tip_size)) / arrow_tip_size
+                half_height = int((1 - tip_progress) * 20)  # Triangle gets narrower
+                if arrow_center_y - half_height <= y <= arrow_center_y + half_height:
+                    r, g, b, a = arrow_color
+            
+            raw_data += bytes([r, g, b, a])
     
     # Compress the data
     compressed = zlib.compress(raw_data, 9)
@@ -179,7 +186,7 @@ def create_gradient_png(filename, width, height):
 
 # Create background
 os.makedirs('dmg-assets', exist_ok=True)
-create_gradient_png('dmg-assets/background.png', 660, 400)
+create_dmg_background('dmg-assets/background.png', 660, 400)
 print("Background created successfully")
 PYTHON
 

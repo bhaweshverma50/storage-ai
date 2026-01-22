@@ -6,6 +6,7 @@ struct DashboardView: View {
     @State private var topApps: [AppEntry] = []
     @State private var cleanupTargets: [CleanupTarget] = []
     @State private var isLoadingApps = false
+    @State private var isLoadingCleanup = false
     @State private var selectedNavItem: NavigationItem = .overview
     @State private var aiRecommendations: [String] = []
     @State private var isLoadingAI = false
@@ -173,7 +174,7 @@ struct DashboardView: View {
             case .applications:
                 AppDetailView(apps: topApps)
             case .cleanup:
-                CleanupView(targets: cleanupTargets)
+                CleanupView(targets: cleanupTargets, isLoading: isLoadingCleanup)
             case .settings:
                 SettingsView()
             }
@@ -182,6 +183,14 @@ struct DashboardView: View {
     
     // MARK: - Data Loading
     private func loadInitialData() async {
+        // Wait for cache to finish loading before checking summary
+        // This fixes race condition where loadInitialData runs before ScanService.loadCachedData completes
+        var waitCount = 0
+        while appState.scanService.isLoadingCache && waitCount < 50 {
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            waitCount += 1
+        }
+        
         // Only load app data if we have cached scan data
         // This prevents permission popups on every app launch
         guard appState.scanService.summary.totalBytes > 0 else {
@@ -232,6 +241,10 @@ struct DashboardView: View {
     }
     
     private func loadCleanupTargets() async {
+        await MainActor.run {
+            isLoadingCleanup = true
+        }
+        
         let targets = await Task.detached {
             let service = CleanupService()
             service.buildTargets()
@@ -240,6 +253,7 @@ struct DashboardView: View {
         
         await MainActor.run {
             cleanupTargets = targets
+            isLoadingCleanup = false
         }
     }
     
@@ -452,9 +466,12 @@ struct OverviewView: View {
             HStack(spacing: spacing) {
                 // Distribution Chart
                 BentoCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Distribution")
-                            .font(.system(size: 14 * fontScale, weight: .medium))
+                    VStack(spacing: 12) {
+                        HStack {
+                            Text("Distribution")
+                                .font(.system(size: 14 * fontScale, weight: .medium))
+                            Spacer()
+                        }
                         
                         if appState.scanService.summary.totalBytes > 0 {
                             DonutChart(
@@ -462,6 +479,7 @@ struct OverviewView: View {
                                     .filter { $0.bytes > 0 }
                                     .map { ($0.category.color, Double($0.bytes), $0.category.displayName) }
                             )
+                            .frame(maxWidth: .infinity)
                         } else {
                             VStack(spacing: 8) {
                                 Image(systemName: "chart.pie")

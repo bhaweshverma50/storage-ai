@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CleanupView: View {
     let targets: [CleanupTarget]
+    var isLoading: Bool = false
     @State private var selection = Set<UUID>()
     @State private var dryRun = true
     @State private var isDeleting = false
@@ -148,7 +149,21 @@ struct CleanupView: View {
     // MARK: - Targets Grid
     private func targetsGrid(width: CGFloat) -> some View {
         Group {
-            if filteredTargets.isEmpty {
+            if isLoading {
+                BentoCard {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                        Text("Scanning for cleanup targets...")
+                            .font(.subheadline.weight(.medium))
+                        Text("This may take a moment")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(height: 200)
+            } else if filteredTargets.isEmpty {
                 BentoCard {
                     VStack(spacing: 12) {
                         Image(systemName: "sparkles")
@@ -216,24 +231,28 @@ struct CleanupView: View {
     
     // MARK: - Action Button
     private var actionButton: some View {
-        Button {
-            showConfirmation = true
-        } label: {
-            HStack(spacing: 8) {
-                if isDeleting {
-                    ProgressView()
-                        .scaleEffect(0.8)
+        HStack {
+            Spacer()
+            Button {
+                showConfirmation = true
+            } label: {
+                HStack(spacing: 8) {
+                    if isDeleting {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                    }
+                    Image(systemName: dryRun ? "eye" : "trash")
+                    Text(dryRun ? "Preview Cleanup (\(selection.count))" : "Run Cleanup (\(selection.count))")
                 }
-                Image(systemName: dryRun ? "eye" : "trash")
-                Text(dryRun ? "Preview Cleanup (\(selection.count))" : "Run Cleanup (\(selection.count))")
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
+            .buttonStyle(.borderedProminent)
+            .tint(dryRun ? .blue : .red)
+            .controlSize(.large)
+            .disabled(isDeleting)
+            Spacer()
         }
-        .buttonStyle(.borderedProminent)
-        .tint(dryRun ? .blue : .red)
-        .controlSize(.large)
-        .disabled(isDeleting)
     }
     
     // MARK: - Computed Properties

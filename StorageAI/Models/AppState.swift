@@ -80,12 +80,20 @@ final class AppState: ObservableObject {
     @AppStorage("fontSize") var fontSize: FontSize = .medium
     @Published var settings = AppSettings()
     let scanService = ScanService()
+    let ollamaSetupService = OllamaSetupService()
     
     private var cancellables = Set<AnyCancellable>()
     
     init() {
         // Forward changes from scanService to trigger UI updates
         scanService.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        
+        // Forward changes from ollamaSetupService to trigger UI updates
+        ollamaSetupService.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }

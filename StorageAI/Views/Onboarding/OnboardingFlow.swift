@@ -7,6 +7,8 @@ struct OnboardingFlow: View {
     @State private var fullDiskAccessGranted = false
     @State private var hasCheckedAccess = false
     @State private var isAnimating = false
+    @State private var showOllamaSetup = false
+    @State private var enableAI = true
     
     private let steps: [OnboardingStep] = [
         OnboardingStep(
@@ -41,9 +43,9 @@ struct OnboardingFlow: View {
             iconColor: .cyan,
             title: "AI Recommendations",
             subtitle: "Optional: Local AI insights",
-            description: "Storage AI can use Ollama (local AI) to provide smart cleanup recommendations. Make sure Ollama is running if you'd like this feature.",
-            buttonTitle: "Learn about Ollama",
-            buttonAction: { NSWorkspace.shared.open(URL(string: "https://ollama.ai")!) }
+            description: "Storage AI can use Ollama (local AI) to provide smart cleanup recommendations. This runs entirely on your Mac for privacy.",
+            buttonTitle: nil, // We'll use custom UI for this step
+            buttonAction: nil
         ),
         OnboardingStep(
             icon: "checkmark.circle.fill",
@@ -166,6 +168,11 @@ struct OnboardingFlow: View {
                     permissionCheckSection
                 }
                 
+                // AI setup for step 3
+                if currentStep == 3 {
+                    aiSetupSection
+                }
+                
                 // Action button
                 if let buttonTitle = steps[currentStep].buttonTitle,
                    let action = steps[currentStep].buttonAction {
@@ -228,6 +235,135 @@ struct OnboardingFlow: View {
             .padding(16)
             .background(Color.secondary.opacity(0.05))
             .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+    }
+    
+    // MARK: - AI Setup Section
+    private var aiSetupSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+                .padding(.vertical, 8)
+            
+            // Enable AI Toggle
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color.cyan.opacity(0.15))
+                        .frame(width: 40, height: 40)
+                    
+                    Image(systemName: "cpu")
+                        .foregroundStyle(.cyan)
+                }
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enable AI Recommendations")
+                        .font(.subheadline.weight(.medium))
+                    
+                    Text("Get smart cleanup suggestions powered by local AI")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer()
+                
+                Toggle("", isOn: $enableAI)
+                    .toggleStyle(.switch)
+                    .onChange(of: enableAI) { _, newValue in
+                        appState.settings.ollamaEnabled = newValue
+                    }
+            }
+            .padding(16)
+            .background(Color.secondary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            
+            // Setup Section (only if AI is enabled)
+            if enableAI {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(aiStatusColor.opacity(0.15))
+                            .frame(width: 40, height: 40)
+                        
+                        Image(systemName: aiStatusIcon)
+                            .foregroundStyle(aiStatusColor)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(aiStatusTitle)
+                            .font(.subheadline.weight(.medium))
+                        
+                        Text(aiStatusDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer()
+                    
+                    if appState.ollamaSetupService.status != .ready {
+                        Button("Set Up Ollama") {
+                            showOllamaSetup = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.cyan)
+                    }
+                }
+                .padding(16)
+                .background(Color.secondary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                
+                // Info about disk space
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                    
+                    Text("Requires ~2.5 GB of disk space. You can set this up later in Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .sheet(isPresented: $showOllamaSetup) {
+            OllamaSetupSheet()
+                .environmentObject(appState)
+        }
+        .task {
+            _ = await appState.ollamaSetupService.checkStatus()
+        }
+    }
+    
+    private var aiStatusColor: Color {
+        switch appState.ollamaSetupService.status {
+        case .ready: return .green
+        case .runningNoModel: return .yellow
+        case .installedNotRunning: return .orange
+        case .notInstalled: return .gray
+        }
+    }
+    
+    private var aiStatusIcon: String {
+        switch appState.ollamaSetupService.status {
+        case .ready: return "checkmark.circle.fill"
+        case .runningNoModel: return "arrow.down.circle"
+        case .installedNotRunning: return "play.circle"
+        case .notInstalled: return "arrow.down.circle"
+        }
+    }
+    
+    private var aiStatusTitle: String {
+        switch appState.ollamaSetupService.status {
+        case .ready: return "Ollama Ready"
+        case .runningNoModel: return "Model Download Required"
+        case .installedNotRunning: return "Ollama Not Running"
+        case .notInstalled: return "Ollama Not Installed"
+        }
+    }
+    
+    private var aiStatusDescription: String {
+        switch appState.ollamaSetupService.status {
+        case .ready: return "AI recommendations are available"
+        case .runningNoModel: return "Ollama is running but needs the AI model"
+        case .installedNotRunning: return "Click Set Up to start Ollama"
+        case .notInstalled: return "Click Set Up to install Ollama"
         }
     }
     

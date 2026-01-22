@@ -215,4 +215,135 @@ enum OllamaClient {
         
         throw lastError ?? OllamaError.connectionFailed
     }
+    
+    // MARK: - Check if Model Exists
+    
+    /// Check if a specific model is available locally
+    static func hasModel(_ model: String) async -> Bool {
+        do {
+            let models = try await listModels()
+            // Check for exact match or match without tag (e.g., "llama3.2" matches "llama3.2:latest")
+            return models.contains { modelName in
+                modelName == model ||
+                modelName.hasPrefix(model + ":") ||
+                model.hasPrefix(modelName.split(separator: ":").first.map(String.init) ?? "")
+            }
+        } catch {
+            return false
+        }
+    }
+    
+    // MARK: - Pull Model
+    
+    /// Response structure for pull progress
+    private struct PullProgressResponse: Decodable {
+        let status: String
+        let digest: String?
+        let total: Int64?
+        let completed: Int64?
+    }
+    
+    /// Pull a model from Ollama registry with progress tracking
+    /// - Parameters:
+    ///   - model: Model name to pull (e.g., "llama3.2")
+    ///   - progress: Callback with progress (0-1) and status message
+    static func pullModel(
+        _ model: String,
+        progress: @escaping (Double, String) -> Void
+    ) async throws {
+        let url = URL(string: "\(baseURL)/api/pull")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 3600 // 1 hour timeout for large models
+        
+        let payload: [String: Any] = [
+            "name": model,
+            "stream": true
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        // Use bytes stream for progress tracking
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 3600
+        config.timeoutIntervalForResource = 3600
+        let session = URLSession(configuration: config)
+        
+        let (bytes, response) = try await session.bytes(for: request)
+        
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw OllamaError.badStatus(http.statusCode)
+        }
+        
+        var buffer = Data()
+        
+        for try await byte in bytes {
+            buffer.append(byte)
+            
+            // Check for newline (each JSON object is on its own line)
+            if byte == UInt8(ascii: "\n") {
+                if let line = String(data: buffer, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !line.isEmpty,
+                   let jsonData = line.data(using: .utf8) {
+                    
+                    if let progressResponse = try? JSONDecoder().decode(PullProgressResponse.self, from: jsonData) {
+                        let statusMessage = formatPullStatus(progressResponse)
+                        let progressValue = calculatePullProgress(progressResponse)
+                        progress(progressValue, statusMessage)
+                        
+                        // Check for completion
+                        if progressResponse.status == "success" {
+                            progress(1.0, "Download complete!")
+                            return
+                        }
+                    }
+                }
+                buffer.removeAll()
+            }
+        }
+    }
+    
+    private static func formatPullStatus(_ response: PullProgressResponse) -> String {
+        switch response.status {
+        case "pulling manifest":
+            return "Fetching model info..."
+        case let status where status.starts(with: "pulling"):
+            if let completed = response.completed, let total = response.total, total > 0 {
+                let percent = Int((Double(completed) / Double(total)) * 100)
+                let completedMB = completed / 1_000_000
+                let totalMB = total / 1_000_000
+                return "Downloading: \(completedMB) MB / \(totalMB) MB (\(percent)%)"
+            }
+            return "Downloading model..."
+        case "verifying sha256 digest":
+            return "Verifying download..."
+        case "writing manifest":
+            return "Saving model..."
+        case "removing any unused layers":
+            return "Cleaning up..."
+        case "success":
+            return "Download complete!"
+        default:
+            return response.status.capitalized
+        }
+    }
+    
+    private static func calculatePullProgress(_ response: PullProgressResponse) -> Double {
+        guard let completed = response.completed, let total = response.total, total > 0 else {
+            // For non-download phases, return small progress values
+            switch response.status {
+            case "pulling manifest": return 0.01
+            case "verifying sha256 digest": return 0.95
+            case "writing manifest": return 0.97
+            case "removing any unused layers": return 0.98
+            case "success": return 1.0
+            default: return 0.0
+            }
+        }
+        
+        // Download progress (scaled to 0.02 - 0.94 range)
+        let downloadProgress = Double(completed) / Double(total)
+        return 0.02 + (downloadProgress * 0.92)
+    }
 }
