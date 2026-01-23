@@ -52,9 +52,19 @@ struct StorageAIApp: App {
             URL(fileURLWithPath: "/Applications")
         ]
         
+        // Add developer directories
+        let developerPaths = ["/opt/homebrew", "/usr/local", "/opt/local"]
+        for path in developerPaths {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                roots.append(url)
+            }
+        }
+        
         if appState.settings.includeSystem {
             roots.append(URL(fileURLWithPath: "/System"))
             roots.append(URL(fileURLWithPath: "/Library"))
+            roots.append(URL(fileURLWithPath: "/private/var"))
         }
         
         appState.scanService.startScan(settings: appState.settings, roots: roots)
@@ -224,9 +234,19 @@ struct MenuBarView: View {
             URL(fileURLWithPath: "/Applications")
         ]
         
+        // Add developer directories
+        let developerPaths = ["/opt/homebrew", "/usr/local", "/opt/local"]
+        for path in developerPaths {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                roots.append(url)
+            }
+        }
+        
         if appState.settings.includeSystem {
             roots.append(URL(fileURLWithPath: "/System"))
             roots.append(URL(fileURLWithPath: "/Library"))
+            roots.append(URL(fileURLWithPath: "/private/var"))
         }
         
         appState.scanService.startScan(settings: appState.settings, roots: roots)

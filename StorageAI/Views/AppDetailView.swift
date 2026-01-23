@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AppDetailView: View {
     let apps: [AppEntry]
+    var onCleanup: ((Int64) -> Void)?  // Callback when cleanup happens, with bytes freed
     @State private var searchText = ""
     @State private var selectedApp: AppEntry?
     @State private var sortOrder: SortOrder = .totalDesc
@@ -31,7 +32,7 @@ struct AppDetailView: View {
             }
         }
         .sheet(item: $selectedApp) { app in
-            AppDetailSheet(app: app)
+            AppDetailSheet(app: app, onCleanup: onCleanup)
         }
     }
     
@@ -333,6 +334,7 @@ struct AppDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accentTheme) private var accentTheme
     let app: AppEntry
+    var onCleanup: ((Int64) -> Void)?  // Callback with bytes cleaned
     
     @State private var showCleanCacheAlert = false
     @State private var showRemoveDataAlert = false
@@ -340,6 +342,28 @@ struct AppDetailSheet: View {
     @State private var isProcessing = false
     @State private var operationResult: String?
     @State private var operationError: String?
+    
+    // Track current sizes (start with app's values, update after cleanup)
+    @State private var currentCacheSize: Int64 = 0
+    @State private var currentSupportSize: Int64 = 0
+    @State private var currentContainerSize: Int64 = 0
+    @State private var currentBundleSize: Int64 = 0
+    @State private var currentOtherDataSize: Int64 = 0  // Prefs + saved state
+    @State private var didInitializeSizes = false
+    
+    // Computed properties for current totals
+    private var currentTotalBytes: Int64 {
+        currentBundleSize + currentSupportSize + currentCacheSize + currentContainerSize + currentOtherDataSize
+    }
+    
+    private var currentCleanableBytes: Int64 {
+        currentCacheSize + currentContainerSize
+    }
+    
+    /// Check if this is an orphaned app (has data but no actual .app bundle)
+    private var isOrphanedApp: Bool {
+        app.bundleSizeBytes == 0 || !app.bundleURL.pathExtension.lowercased().contains("app")
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -362,7 +386,7 @@ struct AppDetailSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     
-                    Text("Total: \(Formatters.bytes(app.totalBytes))")
+                    Text("Total: \(Formatters.bytes(currentTotalBytes))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -377,6 +401,16 @@ struct AppDetailSheet: View {
                 .buttonStyle(.plain)
             }
             .padding(20)
+            .onAppear {
+                if !didInitializeSizes {
+                    currentBundleSize = app.bundleSizeBytes
+                    currentSupportSize = app.supportSizeBytes
+                    currentCacheSize = app.cacheSizeBytes
+                    currentContainerSize = app.containerSizeBytes
+                    currentOtherDataSize = calculateOtherDataSize()
+                    didInitializeSizes = true
+                }
+            }
             
             Divider()
             
@@ -391,21 +425,21 @@ struct AppDetailSheet: View {
                             // Visual bar
                             GeometryReader { geometry in
                                 HStack(spacing: 2) {
-                                    if app.bundleSizeBytes > 0 {
+                                    if currentBundleSize > 0 {
                                         Rectangle().fill(Color.blue)
-                                            .frame(width: geometry.size.width * proportion(app.bundleSizeBytes))
+                                            .frame(width: geometry.size.width * proportion(currentBundleSize))
                                     }
-                                    if app.supportSizeBytes > 0 {
+                                    if currentSupportSize > 0 {
                                         Rectangle().fill(Color.purple)
-                                            .frame(width: geometry.size.width * proportion(app.supportSizeBytes))
+                                            .frame(width: geometry.size.width * proportion(currentSupportSize))
                                     }
-                                    if app.cacheSizeBytes > 0 {
+                                    if currentCacheSize > 0 {
                                         Rectangle().fill(Color.orange)
-                                            .frame(width: geometry.size.width * proportion(app.cacheSizeBytes))
+                                            .frame(width: geometry.size.width * proportion(currentCacheSize))
                                     }
-                                    if app.containerSizeBytes > 0 {
+                                    if currentContainerSize > 0 {
                                         Rectangle().fill(Color.cyan)
-                                            .frame(width: geometry.size.width * proportion(app.containerSizeBytes))
+                                            .frame(width: geometry.size.width * proportion(currentContainerSize))
                                     }
                                 }
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -414,10 +448,10 @@ struct AppDetailSheet: View {
                             
                             // Legend
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                LegendRow(color: .blue, title: "Bundle", size: app.bundleSizeBytes)
-                                LegendRow(color: .purple, title: "Support", size: app.supportSizeBytes)
-                                LegendRow(color: .orange, title: "Cache", size: app.cacheSizeBytes)
-                                LegendRow(color: .cyan, title: "Containers", size: app.containerSizeBytes)
+                                LegendRow(color: .blue, title: "Bundle", size: currentBundleSize)
+                                LegendRow(color: .purple, title: "Support", size: currentSupportSize)
+                                LegendRow(color: .orange, title: "Cache", size: currentCacheSize)
+                                LegendRow(color: .cyan, title: "Containers", size: currentContainerSize)
                             }
                         }
                     }
@@ -444,7 +478,7 @@ struct AppDetailSheet: View {
                                 .buttonStyle(.bordered)
                             }
                             
-                            if app.cleanableBytes > 0 {
+                            if currentCleanableBytes > 0 {
                                 Divider()
                                 
                                 HStack {
@@ -458,7 +492,7 @@ struct AppDetailSheet: View {
                                     
                                     Spacer()
                                     
-                                    Text(Formatters.bytes(app.cleanableBytes))
+                                    Text(Formatters.bytes(currentCleanableBytes))
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.orange)
                                 }
@@ -500,41 +534,44 @@ struct AppDetailSheet: View {
                             }
                             
                             // Clean Cache
-                            if app.cacheSizeBytes > 0 {
+                            if currentCacheSize > 0 {
                                 cleanupRow(
                                     icon: "trash",
                                     iconColor: .orange,
                                     title: "Clean Cache",
                                     description: "Remove cached files only",
-                                    size: app.cacheSizeBytes,
+                                    size: currentCacheSize,
                                     action: { showCleanCacheAlert = true }
                                 )
                             }
                             
                             // Remove App Data
-                            if app.cleanableBytes > 0 {
+                            if currentCleanableBytes > 0 || currentSupportSize > 0 {
                                 cleanupRow(
                                     icon: "folder.badge.minus",
                                     iconColor: .purple,
                                     title: "Remove App Data",
                                     description: "Remove cache, containers & support files",
-                                    size: app.supportSizeBytes + app.cacheSizeBytes + app.containerSizeBytes,
+                                    size: currentSupportSize + currentCacheSize + currentContainerSize,
                                     action: { showRemoveDataAlert = true }
                                 )
                             }
                             
-                            Divider()
-                            
-                            // Uninstall App
-                            cleanupRow(
-                                icon: "trash.fill",
-                                iconColor: .red,
-                                title: "Uninstall App",
-                                description: "Move app to Trash and remove all data",
-                                size: app.totalBytes,
-                                isDestructive: true,
-                                action: { showUninstallAlert = true }
-                            )
+                            // Only show Uninstall for real apps (not orphaned data)
+                            if !isOrphanedApp {
+                                Divider()
+                                
+                                // Uninstall App
+                                cleanupRow(
+                                    icon: "trash.fill",
+                                    iconColor: .red,
+                                    title: "Uninstall App",
+                                    description: "Move app to Trash and remove all data",
+                                    size: currentTotalBytes,
+                                    isDestructive: true,
+                                    action: { showUninstallAlert = true }
+                                )
+                            }
                         }
                     }
                 }
@@ -546,7 +583,7 @@ struct AppDetailSheet: View {
             Button("Cancel", role: .cancel) {}
             Button("Clean", role: .destructive) { cleanCache() }
         } message: {
-            Text("This will remove \(Formatters.bytes(app.cacheSizeBytes)) of cached data for \(app.name). The app will recreate cache as needed.")
+            Text("This will remove \(Formatters.bytes(currentCacheSize)) of cached data for \(app.name). The app will recreate cache as needed.")
         }
         .alert("Remove App Data", isPresented: $showRemoveDataAlert) {
             Button("Cancel", role: .cancel) {}
@@ -558,7 +595,7 @@ struct AppDetailSheet: View {
             Button("Cancel", role: .cancel) {}
             Button("Uninstall", role: .destructive) { uninstallApp() }
         } message: {
-            Text("This will move \(app.name) to Trash and remove all associated data (\(Formatters.bytes(app.totalBytes))). You can restore it from Trash if needed.")
+            Text("This will move \(app.name) to Trash and remove all associated data (\(Formatters.bytes(currentTotalBytes))). You can restore it from Trash if needed.")
         }
     }
     
@@ -615,65 +652,129 @@ struct AppDetailSheet: View {
     }
     
     private func proportion(_ bytes: Int64) -> CGFloat {
-        guard app.totalBytes > 0 else { return 0 }
-        return CGFloat(bytes) / CGFloat(app.totalBytes)
+        guard currentTotalBytes > 0 else { return 0 }
+        return CGFloat(bytes) / CGFloat(currentTotalBytes)
     }
     
     // MARK: - Cleanup Actions
     
     private var cachePaths: [URL] {
-        guard let bundleId = app.bundleIdentifier else { return [] }
         let home = FileManager.default.homeDirectoryForCurrentUser
         var paths: [URL] = []
+        var addedPaths: Set<String> = []
+        
+        // ~/Library/Caches/{appName}
+        let cachesByName = home.appendingPathComponent("Library/Caches/\(app.name)")
+        if FileManager.default.fileExists(atPath: cachesByName.path) {
+            paths.append(cachesByName)
+            addedPaths.insert(cachesByName.path)
+        }
         
         // ~/Library/Caches/{bundleIdentifier}
-        let caches = home.appendingPathComponent("Library/Caches/\(bundleId)")
-        if FileManager.default.fileExists(atPath: caches.path) {
-            paths.append(caches)
+        if let bundleId = app.bundleIdentifier {
+            let cachesByBundleId = home.appendingPathComponent("Library/Caches/\(bundleId)")
+            if FileManager.default.fileExists(atPath: cachesByBundleId.path),
+               !addedPaths.contains(cachesByBundleId.path) {
+                paths.append(cachesByBundleId)
+            }
         }
         
         return paths
     }
     
     private var allDataPaths: [URL] {
-        guard let bundleId = app.bundleIdentifier else { return [] }
         let home = FileManager.default.homeDirectoryForCurrentUser
         var paths: [URL] = []
+        var addedPaths: Set<String> = []  // Track added paths to avoid duplicates
+        
+        // ~/Library/Caches/{appName}
+        let cachesByName = home.appendingPathComponent("Library/Caches/\(app.name)")
+        if FileManager.default.fileExists(atPath: cachesByName.path) {
+            paths.append(cachesByName)
+            addedPaths.insert(cachesByName.path)
+        }
         
         // ~/Library/Caches/{bundleIdentifier}
-        let caches = home.appendingPathComponent("Library/Caches/\(bundleId)")
-        if FileManager.default.fileExists(atPath: caches.path) {
-            paths.append(caches)
+        if let bundleId = app.bundleIdentifier {
+            let cachesByBundleId = home.appendingPathComponent("Library/Caches/\(bundleId)")
+            if FileManager.default.fileExists(atPath: cachesByBundleId.path),
+               !addedPaths.contains(cachesByBundleId.path) {
+                paths.append(cachesByBundleId)
+                addedPaths.insert(cachesByBundleId.path)
+            }
         }
         
-        // ~/Library/Application Support/{bundleIdentifier}
-        let support = home.appendingPathComponent("Library/Application Support/\(bundleId)")
-        if FileManager.default.fileExists(atPath: support.path) {
-            paths.append(support)
-        }
-        
-        // Also try app name for Application Support
+        // ~/Library/Application Support/{appName}
         let supportByName = home.appendingPathComponent("Library/Application Support/\(app.name)")
         if FileManager.default.fileExists(atPath: supportByName.path) {
             paths.append(supportByName)
+            addedPaths.insert(supportByName.path)
         }
         
-        // ~/Library/Containers/{bundleIdentifier}
-        let containers = home.appendingPathComponent("Library/Containers/\(bundleId)")
-        if FileManager.default.fileExists(atPath: containers.path) {
-            paths.append(containers)
-        }
-        
-        // ~/Library/Preferences/{bundleIdentifier}.plist
-        let prefs = home.appendingPathComponent("Library/Preferences/\(bundleId).plist")
-        if FileManager.default.fileExists(atPath: prefs.path) {
-            paths.append(prefs)
-        }
-        
-        // ~/Library/Saved Application State/{bundleIdentifier}.savedState
-        let savedState = home.appendingPathComponent("Library/Saved Application State/\(bundleId).savedState")
-        if FileManager.default.fileExists(atPath: savedState.path) {
-            paths.append(savedState)
+        // ~/Library/Application Support/{bundleIdentifier}
+        if let bundleId = app.bundleIdentifier {
+            let supportByBundleId = home.appendingPathComponent("Library/Application Support/\(bundleId)")
+            if FileManager.default.fileExists(atPath: supportByBundleId.path),
+               !addedPaths.contains(supportByBundleId.path) {
+                paths.append(supportByBundleId)
+                addedPaths.insert(supportByBundleId.path)
+            }
+            
+            // ~/Library/Containers/{bundleIdentifier}
+            let containers = home.appendingPathComponent("Library/Containers/\(bundleId)")
+            if FileManager.default.fileExists(atPath: containers.path) {
+                paths.append(containers)
+                addedPaths.insert(containers.path)
+            }
+            
+            // ~/Library/Group Containers/{bundleIdentifier}
+            let groupContainers = home.appendingPathComponent("Library/Group Containers/\(bundleId)")
+            if FileManager.default.fileExists(atPath: groupContainers.path) {
+                paths.append(groupContainers)
+                addedPaths.insert(groupContainers.path)
+            }
+            
+            // Dynamically match additional group containers by team ID or bundle ID suffix
+            // This matches the logic in AppAttribution.relatedSupportPaths()
+            let groupContainersDir = home.appendingPathComponent("Library/Group Containers")
+            if let contents = try? FileManager.default.contentsOfDirectory(at: groupContainersDir, includingPropertiesForKeys: nil) {
+                let bundleComponents = bundleId.components(separatedBy: ".")
+                let teamId = bundleComponents.first ?? ""
+                
+                for item in contents {
+                    let containerName = item.lastPathComponent
+                    // Skip if already added
+                    if addedPaths.contains(item.path) { continue }
+                    
+                    let containerComponents = containerName.components(separatedBy: ".")
+                    let containerTeamId = containerComponents.first ?? ""
+                    
+                    // Match by team ID if both have one (team IDs are typically 10 alphanumeric chars)
+                    let hasMatchingTeamId = teamId.count >= 8 && containerTeamId == teamId
+                    
+                    // Match by full bundle ID suffix (e.g., "UBF8T346G9.com.microsoft.Word" matches bundle "com.microsoft.Word")
+                    let hasMatchingSuffix = containerName.lowercased().hasSuffix(".\(bundleId.lowercased())")
+                    
+                    if hasMatchingTeamId || hasMatchingSuffix {
+                        if FileManager.default.fileExists(atPath: item.path) {
+                            paths.append(item)
+                            addedPaths.insert(item.path)
+                        }
+                    }
+                }
+            }
+            
+            // ~/Library/Preferences/{bundleIdentifier}.plist
+            let prefs = home.appendingPathComponent("Library/Preferences/\(bundleId).plist")
+            if FileManager.default.fileExists(atPath: prefs.path) {
+                paths.append(prefs)
+            }
+            
+            // ~/Library/Saved Application State/{bundleIdentifier}.savedState
+            let savedState = home.appendingPathComponent("Library/Saved Application State/\(bundleId).savedState")
+            if FileManager.default.fileExists(atPath: savedState.path) {
+                paths.append(savedState)
+            }
         }
         
         return paths
@@ -684,25 +785,216 @@ struct AppDetailSheet: View {
         operationResult = nil
         operationError = nil
         
+        let bytesBeforeClean = currentCacheSize
+        
         Task {
-            do {
-                var deletedCount = 0
-                for path in cachePaths {
-                    try FileManager.default.removeItem(at: path)
-                    deletedCount += 1
-                }
+            var successCount = 0
+            var failCount = 0
+            
+            for path in cachePaths {
+                let deleted = deletePathSafely(path)
+                if deleted { successCount += 1 } else { failCount += 1 }
+            }
+            
+            // Recalculate actual cache size after cleanup
+            let newCacheSize = recalculateCacheSize()
+            let bytesFreed = bytesBeforeClean - newCacheSize
+            
+            await MainActor.run {
+                currentCacheSize = newCacheSize
+                isProcessing = false
                 
-                await MainActor.run {
-                    isProcessing = false
-                    operationResult = "Cleaned cache successfully"
-                }
-            } catch {
-                await MainActor.run {
-                    isProcessing = false
-                    operationError = error.localizedDescription
+                if bytesFreed > 0 {
+                    if failCount > 0 {
+                        operationResult = "Cleaned \(Formatters.bytes(bytesFreed)) (some items need Full Disk Access)"
+                    } else {
+                        operationResult = "Cleaned \(Formatters.bytes(bytesFreed)) of cache"
+                    }
+                    onCleanup?(bytesFreed)
+                } else if failCount > 0 {
+                    operationError = "Permission denied. Grant Full Disk Access in System Settings → Privacy & Security."
+                } else {
+                    operationResult = "Cache already clean"
                 }
             }
         }
+    }
+    
+    /// Safely delete a path - tries multiple methods and deletes contents if container is protected
+    private func deletePathSafely(_ path: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path.path) else { return true }
+        
+        // First, try moving to Trash (often works for protected items)
+        do {
+            try fm.trashItem(at: path, resultingItemURL: nil)
+            return true
+        } catch {
+            // Trash failed, try direct removal
+        }
+        
+        // Try direct removal
+        do {
+            try fm.removeItem(at: path)
+            return true
+        } catch {
+            // Direct removal failed
+        }
+        
+        // For directories, try to delete contents instead
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: path.path, isDirectory: &isDir) && isDir.boolValue {
+            return deleteContents(of: path)
+        }
+        
+        return false
+    }
+    
+    /// Delete contents of a directory (useful for protected containers)
+    private func deleteContents(of directory: URL) -> Bool {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return false
+        }
+        
+        var deletedAny = false
+        for item in contents {
+            // Try trash first, then remove
+            do {
+                try fm.trashItem(at: item, resultingItemURL: nil)
+                deletedAny = true
+            } catch {
+                do {
+                    try fm.removeItem(at: item)
+                    deletedAny = true
+                } catch {
+                    // Skip items that can't be deleted
+                }
+            }
+        }
+        return deletedAny
+    }
+    
+    private func recalculateCacheSize() -> Int64 {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var total: Int64 = 0
+        var scannedPaths: Set<String> = []
+        
+        // Scan by app name
+        let cachesByName = home.appendingPathComponent("Library/Caches/\(app.name)")
+        if !scannedPaths.contains(cachesByName.path) {
+            scannedPaths.insert(cachesByName.path)
+            total += FileIndexer.sizeOfPath(cachesByName)
+        }
+        
+        // Scan by bundle ID if available (only if different path to avoid double-counting)
+        if let bundleId = app.bundleIdentifier {
+            let cachesByBundleId = home.appendingPathComponent("Library/Caches/\(bundleId)")
+            if !scannedPaths.contains(cachesByBundleId.path) {
+                total += FileIndexer.sizeOfPath(cachesByBundleId)
+            }
+        }
+        
+        return total
+    }
+    
+    private func recalculateSupportSize() -> Int64 {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var total: Int64 = 0
+        var scannedPaths: Set<String> = []
+        
+        // Scan by bundle ID if available
+        if let bundleId = app.bundleIdentifier {
+            let support = home.appendingPathComponent("Library/Application Support/\(bundleId)")
+            if !scannedPaths.contains(support.path) {
+                scannedPaths.insert(support.path)
+                total += FileIndexer.sizeOfPath(support)
+            }
+        }
+        
+        // Scan by app name (only if different from bundleId to avoid double-counting)
+        let supportByName = home.appendingPathComponent("Library/Application Support/\(app.name)")
+        if !scannedPaths.contains(supportByName.path) {
+            total += FileIndexer.sizeOfPath(supportByName)
+        }
+        
+        return total
+    }
+    
+    private func recalculateContainerSize() -> Int64 {
+        guard let bundleId = app.bundleIdentifier else { return 0 }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var total: Int64 = 0
+        var scannedPaths: Set<String> = []
+        
+        // ~/Library/Containers/{bundleIdentifier}
+        let containers = home.appendingPathComponent("Library/Containers/\(bundleId)")
+        if !scannedPaths.contains(containers.path) {
+            scannedPaths.insert(containers.path)
+            total += FileIndexer.sizeOfPath(containers)
+        }
+        
+        // ~/Library/Group Containers/{bundleIdentifier}
+        let groupContainers = home.appendingPathComponent("Library/Group Containers/\(bundleId)")
+        if !scannedPaths.contains(groupContainers.path) {
+            scannedPaths.insert(groupContainers.path)
+            total += FileIndexer.sizeOfPath(groupContainers)
+        }
+        
+        // Dynamically match additional group containers by team ID or bundle ID suffix
+        // This matches the logic in AppAttribution.relatedSupportPaths() and allDataPaths
+        let groupContainersDir = home.appendingPathComponent("Library/Group Containers")
+        if let contents = try? FileManager.default.contentsOfDirectory(at: groupContainersDir, includingPropertiesForKeys: nil) {
+            let bundleComponents = bundleId.components(separatedBy: ".")
+            let teamId = bundleComponents.first ?? ""
+            
+            for item in contents {
+                let containerName = item.lastPathComponent
+                // Skip if already added
+                if scannedPaths.contains(item.path) { continue }
+                
+                let containerComponents = containerName.components(separatedBy: ".")
+                let containerTeamId = containerComponents.first ?? ""
+                
+                // Match by team ID if both have one (team IDs are typically 10 alphanumeric chars)
+                let hasMatchingTeamId = teamId.count >= 8 && containerTeamId == teamId
+                
+                // Match by full bundle ID suffix
+                let hasMatchingSuffix = containerName.lowercased().hasSuffix(".\(bundleId.lowercased())")
+                
+                if hasMatchingTeamId || hasMatchingSuffix {
+                    scannedPaths.insert(item.path)
+                    total += FileIndexer.sizeOfPath(item)
+                }
+            }
+        }
+        
+        return total
+    }
+    
+    /// Calculate the size of preferences and saved application state
+    private func calculateOtherDataSize() -> Int64 {
+        guard let bundleId = app.bundleIdentifier else { return 0 }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var total: Int64 = 0
+        
+        // Preferences plist
+        let prefs = home.appendingPathComponent("Library/Preferences/\(bundleId).plist")
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: prefs.path),
+           let size = attrs[.size] as? Int64 {
+            total += size
+        }
+        
+        // Saved Application State
+        let savedState = home.appendingPathComponent("Library/Saved Application State/\(bundleId).savedState")
+        total += FileIndexer.sizeOfPath(savedState)
+        
+        return total
+    }
+    
+    /// Recalculate the size of preferences and saved application state after cleanup
+    private func recalculateOtherDataSize() -> Int64 {
+        return calculateOtherDataSize()
     }
     
     private func removeAppData() {
@@ -710,45 +1002,104 @@ struct AppDetailSheet: View {
         operationResult = nil
         operationError = nil
         
+        // Include all data types in the calculation (cache, support, container, prefs, saved state)
+        let bytesBeforeClean = currentCacheSize + currentSupportSize + currentContainerSize + currentOtherDataSize
+        
         Task {
-            do {
-                var deletedCount = 0
-                for path in allDataPaths {
-                    try FileManager.default.removeItem(at: path)
-                    deletedCount += 1
-                }
+            var successCount = 0
+            var failCount = 0
+            
+            for path in allDataPaths {
+                let deleted = deletePathSafely(path)
+                if deleted { successCount += 1 } else { failCount += 1 }
+            }
+            
+            // Recalculate actual sizes after cleanup (including prefs and saved state)
+            let newCacheSize = recalculateCacheSize()
+            let newSupportSize = recalculateSupportSize()
+            let newContainerSize = recalculateContainerSize()
+            let newOtherDataSize = recalculateOtherDataSize()
+            let totalBytesFreed = bytesBeforeClean - (newCacheSize + newSupportSize + newContainerSize + newOtherDataSize)
+            
+            await MainActor.run {
+                currentCacheSize = newCacheSize
+                currentSupportSize = newSupportSize
+                currentContainerSize = newContainerSize
+                currentOtherDataSize = newOtherDataSize
+                isProcessing = false
                 
-                await MainActor.run {
-                    isProcessing = false
-                    operationResult = "Removed \(deletedCount) data locations"
-                }
-            } catch {
-                await MainActor.run {
-                    isProcessing = false
-                    operationError = error.localizedDescription
+                if totalBytesFreed > 0 {
+                    if failCount > 0 && (newSupportSize > 0 || newContainerSize > 0) {
+                        operationResult = "Removed \(Formatters.bytes(totalBytesFreed)). Some data needs Full Disk Access to remove."
+                    } else {
+                        operationResult = "Removed \(Formatters.bytes(totalBytesFreed)) of app data"
+                    }
+                    onCleanup?(totalBytesFreed)
+                } else if failCount > 0 {
+                    operationError = "Permission denied. Grant Full Disk Access in System Settings → Privacy & Security."
+                } else {
+                    operationResult = "No data to remove"
                 }
             }
         }
     }
     
     private func uninstallApp() {
+        // Safety check: don't uninstall orphaned apps (they don't have a real .app bundle)
+        guard !isOrphanedApp else {
+            operationError = "Cannot uninstall: This is orphaned app data, not an installed app. Use 'Remove App Data' instead."
+            return
+        }
+        
         isProcessing = true
         operationResult = nil
         operationError = nil
         
+        let totalBytesFreed = currentTotalBytes
+        
         Task {
-            do {
-                // First remove app data
-                for path in allDataPaths {
-                    try? FileManager.default.removeItem(at: path)
+            var dataRemovalFailures: [String] = []
+            
+            // First remove app data - track failures instead of silently ignoring
+            for path in allDataPaths {
+                let deleted = deletePathSafely(path)
+                if !deleted && FileManager.default.fileExists(atPath: path.path) {
+                    dataRemovalFailures.append(path.lastPathComponent)
                 }
-                
-                // Move app to trash
+            }
+            
+            do {
+                // Move app bundle to trash
                 try FileManager.default.trashItem(at: app.bundleURL, resultingItemURL: nil)
                 
+                // Recalculate actual sizes after cleanup (including prefs and saved state)
+                let newCacheSize = recalculateCacheSize()
+                let newSupportSize = recalculateSupportSize()
+                let newContainerSize = recalculateContainerSize()
+                let newOtherDataSize = recalculateOtherDataSize()
+                let remainingDataSize = newCacheSize + newSupportSize + newContainerSize + newOtherDataSize
+                let actualBytesFreed = totalBytesFreed - remainingDataSize
+                
                 await MainActor.run {
+                    // Update sizes to reflect what's actually left
+                    currentBundleSize = 0
+                    currentCacheSize = newCacheSize
+                    currentSupportSize = newSupportSize
+                    currentContainerSize = newContainerSize
+                    currentOtherDataSize = newOtherDataSize
+                    
                     isProcessing = false
-                    operationResult = "\(app.name) uninstalled successfully"
+                    
+                    if dataRemovalFailures.isEmpty && remainingDataSize == 0 {
+                        operationResult = "\(app.name) uninstalled successfully"
+                    } else if remainingDataSize > 0 {
+                        operationResult = "\(app.name) uninstalled. Some data couldn't be removed (needs Full Disk Access)."
+                    } else {
+                        operationResult = "\(app.name) uninstalled successfully"
+                    }
+                    
+                    // Notify parent
+                    onCleanup?(actualBytesFreed)
                     
                     // Close sheet after a delay
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -758,7 +1109,7 @@ struct AppDetailSheet: View {
             } catch {
                 await MainActor.run {
                     isProcessing = false
-                    operationError = error.localizedDescription
+                    operationError = "Failed to uninstall: \(error.localizedDescription)"
                 }
             }
         }

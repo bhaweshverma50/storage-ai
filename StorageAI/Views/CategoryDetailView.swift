@@ -326,16 +326,48 @@ struct CategoryFilesSheet: View {
     private func deleteSelected() {
         let toDelete = cachedFilteredFiles.filter { selection.contains($0.id) }
         
-        do {
-            for file in toDelete {
-                try FileManager.default.removeItem(at: file.url)
+        var deletedIds: Set<UUID> = []
+        var failedFiles: [(name: String, error: String)] = []
+        
+        for file in toDelete {
+            do {
+                // Try moving to Trash first (works better for files in use)
+                try FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
+                deletedIds.insert(file.id)
+            } catch {
+                // If Trash fails, try direct removal
+                do {
+                    try FileManager.default.removeItem(at: file.url)
+                    deletedIds.insert(file.id)
+                } catch let removeError {
+                    // Record the failure but continue with other files
+                    failedFiles.append((file.url.lastPathComponent, removeError.localizedDescription))
+                }
             }
-            appState.scanService.removeEntries(category: category, ids: selection)
-            selection.removeAll()
-            deleteError = nil
-        } catch {
-            deleteError = error.localizedDescription
         }
+        
+        // Update state for successfully deleted files
+        if !deletedIds.isEmpty {
+            appState.scanService.removeEntries(category: category, ids: deletedIds)
+            selection.subtract(deletedIds)
+            
+            // Refresh disk info
+            appState.scanService.refreshDiskInfo()
+        }
+        
+        // Show error message for failed files
+        if failedFiles.isEmpty {
+            deleteError = nil
+        } else if deletedIds.isEmpty {
+            // All failed
+            deleteError = "\"\(failedFiles[0].name)\" couldn't be removed. It may be in use."
+        } else {
+            // Partial success
+            deleteError = "Deleted \(deletedIds.count) files. \(failedFiles.count) couldn't be removed (may be in use)."
+        }
+        
+        // Refresh the file list
+        updateFilteredFiles()
     }
 }
 
