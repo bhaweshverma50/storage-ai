@@ -96,6 +96,105 @@ struct FileHeap {
 }
 
 enum FileIndexer {
+    struct BatchResult {
+        var scannedFiles: Int
+        var scannedBytes: Int64
+        var buckets: [StorageCategory: Int64]
+        var fileCounts: [StorageCategory: Int]
+        var files: [StorageCategory: [FileEntry]]
+        // Return latest path for UI updates 
+        var lastPath: String?
+    }
+    
+    actor ScanAggregator {
+        var buckets: [StorageCategory: Int64]
+        var fileHeaps: [StorageCategory: FileHeap]
+        var categoryFileCounts: [StorageCategory: Int]
+        var scannedFiles: Int
+        var scannedBytes: Int64
+        var lastProgressUpdate: Date
+        
+        let progressCallback: (ScanUpdate) -> Void
+        
+        init(
+            initialBuckets: [StorageCategory: Int64],
+            initialFiles: [StorageCategory: [FileEntry]]?,
+            initialScannedFiles: Int,
+            initialScannedBytes: Int64,
+            progress: @escaping (ScanUpdate) -> Void
+        ) {
+            self.buckets = initialBuckets
+            self.scannedFiles = initialScannedFiles
+            self.scannedBytes = initialScannedBytes
+            self.progressCallback = progress
+            self.lastProgressUpdate = Date()
+            
+            // Initialize heaps
+            var heaps: [StorageCategory: FileHeap] = [:]
+            for category in StorageCategory.allCases {
+                heaps[category] = FileHeap(maxSize: 1000)
+            }
+            if let initialFiles = initialFiles {
+                for (category, files) in initialFiles {
+                    for file in files {
+                        heaps[category]?.insert(file)
+                    }
+                }
+            }
+            self.fileHeaps = heaps
+            
+            self.categoryFileCounts = initialFiles?.mapValues { $0.count } ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
+        }
+        
+        func add(result: BatchResult, phase: ScanPhase) {
+            scannedFiles += result.scannedFiles
+            scannedBytes += result.scannedBytes
+            
+            for (category, bytes) in result.buckets {
+                buckets[category, default: 0] += bytes
+            }
+            
+            for (category, count) in result.fileCounts {
+                categoryFileCounts[category, default: 0] += count
+            }
+            
+            for (category, files) in result.files {
+                for file in files {
+                    fileHeaps[category]?.insert(file)
+                }
+            }
+            
+            // Check throttle (optimization: move date check outside actor if possible, but safe here)
+            let now = Date()
+            if now.timeIntervalSince(lastProgressUpdate) >= 1.0 { // Throttled update inside aggregator
+                lastProgressUpdate = now
+                emitProgress(currentPath: result.lastPath ?? "", phase: phase)
+            }
+        }
+        
+        func emitProgress(currentPath: String, phase: ScanPhase) {
+            progressCallback(ScanUpdate(
+                scannedFiles: scannedFiles,
+                scannedBytes: scannedBytes,
+                currentPath: currentPath,
+                phase: phase,
+                buckets: buckets,
+                fileCounts: categoryFileCounts
+            ))
+        }
+        
+        func getFinalResult() -> ScanResult {
+            // Convert heaps back to sorted arrays
+            var finalFiles: [StorageCategory: [FileEntry]] = [:]
+            for (category, heap) in fileHeaps {
+                finalFiles[category] = heap.files.sorted { $0.sizeBytes > $1.sizeBytes }
+            }
+            
+            let bucketList = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: buckets[$0, default: 0]) }
+            return ScanResult(buckets: bucketList, filesByCategory: finalFiles, fileCounts: categoryFileCounts)
+        }
+    }
+
     static func scan(
         roots: [URL],
         includeHidden: Bool,
@@ -106,200 +205,152 @@ enum FileIndexer {
         initialFiles: [StorageCategory: [FileEntry]]? = nil,
         initialScannedFiles: Int = 0,
         initialScannedBytes: Int64 = 0
-    ) throws -> ScanResult {
-        // Start with initial values if resuming, otherwise start fresh
-        var buckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
+    ) async throws -> ScanResult {
+        // Start with initial values
+        let baseBuckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
         
-        // Use Heaps for tracking top files per category (O(log N) insertion)
-        var fileHeaps: [StorageCategory: FileHeap] = [:]
-        for category in StorageCategory.allCases {
-            fileHeaps[category] = FileHeap(maxSize: 1000)
-        }
+        let aggregator = ScanAggregator(
+            initialBuckets: baseBuckets,
+            initialFiles: initialFiles,
+            initialScannedFiles: initialScannedFiles,
+            initialScannedBytes: initialScannedBytes,
+            progress: progress
+        )
         
-        // If resuming, re-populate heaps (this is O(N log N) but N is small (1000))
-        if let initialFiles = initialFiles {
-            for (category, files) in initialFiles {
-                for file in files {
-                    fileHeaps[category]?.insert(file)
+        // Initial progress
+        await aggregator.emitProgress(currentPath: "Starting scan...", phase: .preparing)
+        
+        let excluded = Set(excludedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path.lowercased() })
+        let classifier = StorageClassifier() // Struct is lightweight
+        
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for root in roots {
+                if cancellationToken.isCancelled { throw FileIndexerError.cancelled }
+                
+                let phase = determinePhase(for: root)
+                await aggregator.emitProgress(currentPath: "Scanning: \(root.lastPathComponent)", phase: phase)
+                
+                let shouldIncludeHidden = includeHidden || root.path.contains("/Library")
+                var enumOptions: FileManager.DirectoryEnumerationOptions = []
+                if !shouldIncludeHidden { enumOptions.insert(.skipsHiddenFiles) }
+                
+                let enumerator = FileManager.default.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], // Minimal keys for fast traversal
+                    options: enumOptions
+                )
+                
+                guard let fileEnum = enumerator else { continue }
+                
+                var batch: [URL] = []
+                batch.reserveCapacity(2000)
+                
+                for case let url as URL in fileEnum {
+                    if cancellationToken.isCancelled { throw FileIndexerError.cancelled }
+                    
+                    // Simple path checks (fast)
+                    let path = url.path.lowercased()
+                    // Skip exact excluded paths or prefixes efficiently
+                    if excluded.contains(where: { path.hasPrefix($0) }) {
+                        fileEnum.skipDescendants()
+                        continue
+                    }
+                    
+                    if path.contains("/timemachine") || path.contains("/.spotlight-v100") || path.contains("/.trash") {
+                        fileEnum.skipDescendants()
+                        continue
+                    }
+                    
+                    batch.append(url)
+                    
+                    if batch.count >= 2000 {
+                        let batchToProcess = batch
+                        batch = []
+                        batch.reserveCapacity(2000)
+                        
+                        group.addTask {
+                            if cancellationToken.isCancelled { return }
+                            let result = processBatch(batchToProcess, classifier: classifier)
+                            if !cancellationToken.isCancelled {
+                                await aggregator.add(result: result, phase: phase)
+                            }
+                        }
+                    }
+                }
+                
+                // Process remaining
+                if !batch.isEmpty {
+                    let batchToProcess = batch
+                    group.addTask {
+                        let result = processBatch(batchToProcess, classifier: classifier)
+                        await aggregator.add(result: result, phase: phase)
+                    }
                 }
             }
+            
+            // Wait for all tasks to complete
+            try await group.waitForAll()
         }
-
-        var categoryFileCounts: [StorageCategory: Int] = initialFiles?.mapValues { $0.count } ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
-        var scannedFiles = initialScannedFiles
-        var scannedBytes: Int64 = initialScannedBytes
-        var lastProgressUpdate = Date()
-
-        let excluded = Set(excludedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path.lowercased() })
         
-        // Get common system paths for faster classification
-        let classifier = StorageClassifier()
-
-        // Send initial progress
-        progress(ScanUpdate(
-            scannedFiles: 0,
-            scannedBytes: 0,
-            currentPath: "Starting scan...",
-            phase: .preparing,
-            buckets: buckets,
-            fileCounts: categoryFileCounts
-        ))
-
-        for root in roots {
-            // Check cancellation at each root
-            if cancellationToken.isCancelled {
-                throw FileIndexerError.cancelled
-            }
-            
-            // Determine scan phase based on root
-            let phase = determinePhase(for: root)
-            progress(ScanUpdate(
-                scannedFiles: scannedFiles,
-                scannedBytes: scannedBytes,
-                currentPath: "Scanning: \(root.lastPathComponent)",
-                phase: phase,
-                buckets: buckets,
-                fileCounts: categoryFileCounts
-            ))
-            
-            // For Library folder, always include hidden files
-            let shouldIncludeHidden = includeHidden || root.path.contains("/Library")
-            
-            // Use different options based on what we're scanning
-            var enumOptions: FileManager.DirectoryEnumerationOptions = []
-            if !shouldIncludeHidden {
-                enumOptions.insert(.skipsHiddenFiles)
-            }
-            
-            let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: [
+        await aggregator.emitProgress(currentPath: "Finishing up...", phase: .analyzing)
+        return await aggregator.getFinalResult()
+    }
+    
+    private static func processBatch(_ urls: [URL], classifier: StorageClassifier) -> BatchResult {
+        var scannedFiles = 0
+        var scannedBytes: Int64 = 0
+        var buckets: [StorageCategory: Int64] = [:]
+        var fileCounts: [StorageCategory: Int] = [:]
+        var files: [StorageCategory: [FileEntry]] = [:]
+        var lastPath: String?
+        
+        for url in urls {
+            // Re-check detailed resource values here (thread-safe on URL)
+            do {
+                let values = try url.resourceValues(forKeys: [
                     .isRegularFileKey,
-                    .isDirectoryKey,
                     .fileSizeKey,
                     .totalFileAllocatedSizeKey,
-                    .isHiddenKey,
-                    .contentModificationDateKey
-                ],
-                options: enumOptions
-            )
-
-            guard let fileEnum = enumerator else {
+                    .contentModificationDateKey,
+                    .isDirectoryKey
+                ])
+                
+                if values.isDirectory == true { continue }
+                guard values.isRegularFile == true else { continue }
+                
+                let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+                scannedFiles += 1
+                scannedBytes += size
+                lastPath = url.path
+                
+                // Optimize: Use precomputed standard path if possible, but URL resource values don't give "standardized path string" easily
+                // We'll trust the URL from enumerator is good enough.
+                let category = classifier.classify(url: url)
+                
+                buckets[category, default: 0] += size
+                fileCounts[category, default: 0] += 1
+                
+                if size > 1_000_000 {
+                    let entry = FileEntry(
+                        url: url,
+                        sizeBytes: size,
+                        modifiedAt: values.contentModificationDate
+                    )
+                    files[category, default: []].append(entry)
+                }
+            } catch {
                 continue
             }
-
-            var batchCount = 0
-            let batchSize = 100  // Process in batches to release memory
-            
-            for case let url as URL in fileEnum {
-                // Check cancellation frequently
-                if cancellationToken.isCancelled {
-                    throw FileIndexerError.cancelled
-                }
-                
-                // Use autoreleasepool every batch to release Objective-C objects
-                let shouldDrainPool = batchCount >= batchSize
-                if shouldDrainPool {
-                    batchCount = 0
-                }
-                
-                autoreleasepool {
-                    let standardPath = url.standardizedFileURL.path
-                    let lowercasePath = standardPath.lowercased()
-                    
-                    // Skip excluded paths
-                    if excluded.contains(where: { lowercasePath.hasPrefix($0) }) {
-                        fileEnum.skipDescendants()
-                        return
-                    }
-                    
-                    // Skip problematic system paths
-                    if lowercasePath.contains("/timemachine") ||
-                       lowercasePath.contains("/.spotlight-v100") ||
-                       lowercasePath.contains("/.fseventsd") ||
-                       lowercasePath.contains("/.trash") ||
-                       lowercasePath.contains("/volumes/") && !lowercasePath.contains("/volumes/macintosh") {
-                        fileEnum.skipDescendants()
-                        return
-                    }
-
-                    do {
-                        let values = try url.resourceValues(forKeys: [
-                            .isDirectoryKey,
-                            .isRegularFileKey,
-                            .isHiddenKey,
-                            .fileSizeKey,
-                            .totalFileAllocatedSizeKey,
-                            .contentModificationDateKey
-                        ])
-
-                        // Skip directories (we still traverse into them)
-                        if values.isDirectory == true {
-                            return
-                        }
-
-                        guard values.isRegularFile == true else { return }
-
-                        let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
-                        scannedFiles += 1
-                        scannedBytes += size
-
-                        let category = classifier.classify(url: url)
-                        buckets[category, default: 0] += size
-                        categoryFileCounts[category, default: 0] += 1
-
-                        // Store files larger than 1MB for display
-                        // Using Heap insert is O(log N) instead of Array O(N) sort/insert
-                        if size > 1_000_000 {
-                            fileHeaps[category]?.insert(FileEntry(
-                                url: url,
-                                sizeBytes: size,
-                                modifiedAt: values.contentModificationDate
-                            ))
-                        }
-
-                        // Update progress every 5 seconds OR every 2000 files
-                        let now = Date()
-                        let timeSinceLastUpdate = now.timeIntervalSince(lastProgressUpdate)
-                        if timeSinceLastUpdate >= 5.0 || scannedFiles % 2000 == 0 {
-                            lastProgressUpdate = now
-                            progress(ScanUpdate(
-                                scannedFiles: scannedFiles,
-                                scannedBytes: scannedBytes,
-                                currentPath: url.path,
-                                phase: phase,
-                                buckets: buckets,
-                                fileCounts: categoryFileCounts
-                            ))
-                        }
-                    } catch {
-                        // Skip files we can't read
-                        return
-                    }
-                }
-                
-                batchCount += 1
-            }
         }
-
-        // Final update
-        progress(ScanUpdate(
+        
+        return BatchResult(
             scannedFiles: scannedFiles,
             scannedBytes: scannedBytes,
-            currentPath: "Finishing up...",
-            phase: .analyzing,
             buckets: buckets,
-            fileCounts: categoryFileCounts
-        ))
-        
-        // Convert heaps back to sorted arrays for final result
-        var finalFiles: [StorageCategory: [FileEntry]] = [:]
-        for (category, heap) in fileHeaps {
-            finalFiles[category] = heap.files.sorted { $0.sizeBytes > $1.sizeBytes }
-        }
-        
-        let bucketList = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: buckets[$0, default: 0]) }
-        return ScanResult(buckets: bucketList, filesByCategory: finalFiles)
+            fileCounts: fileCounts,
+            files: files,
+            lastPath: lastPath
+        )
     }
     
     private static func determinePhase(for url: URL) -> ScanPhase {
@@ -351,7 +402,7 @@ enum FileIndexer {
     }
 }
 
-class StorageClassifier {
+struct StorageClassifier {
     // Cache standard paths to avoid repeated lookups
     private let homeDir: String
     private let userDocuments: String
@@ -386,9 +437,10 @@ class StorageClassifier {
     }
     
     func classify(url: URL) -> StorageCategory {
-        let path = url.path.lowercased()
-        let pathExtension = url.pathExtension.lowercased()
-        
+        return classify(path: url.path.lowercased(), pathExtension: url.pathExtension.lowercased())
+    }
+
+    func classify(path: String, pathExtension: String) -> StorageCategory {
         // 1. Applications
         if path.hasPrefix("/applications") || 
            path.contains("/applications/") ||

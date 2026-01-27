@@ -125,6 +125,7 @@ struct StorageSummary {
 struct ScanResult {
     var buckets: [StorageBucket]
     var filesByCategory: [StorageCategory: [FileEntry]]
+    var fileCounts: [StorageCategory: Int]
 }
 
 struct FileEntry: Identifiable {

@@ -254,7 +254,7 @@ final class ScanService: ObservableObject {
             // Run the scan on a background thread with lower priority for efficiency
             let result: Result<ScanResult, Error> = await Task.detached(priority: .utility) { [weak self] in
                 do {
-                    let scanResult = try FileIndexer.scan(
+                    let scanResult = try await FileIndexer.scan(
                         roots: roots,
                         includeHidden: includeHidden,
                         excludedPaths: excludedPaths,
@@ -326,7 +326,7 @@ final class ScanService: ObservableObject {
                     self.summary = StorageSummary(buckets: scanResult.buckets)
                     self.filesByCategory = scanResult.filesByCategory
                     // Update file counts from actual scan results
-                    self.fileCounts = Dictionary(uniqueKeysWithValues: scanResult.filesByCategory.map { ($0.key, $0.value.count) })
+                    self.fileCounts = scanResult.fileCounts
                     self.lastScanDate = Date()
                     self.scanState = .complete  // Mark as complete scan
                     

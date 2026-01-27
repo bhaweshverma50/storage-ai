@@ -8,7 +8,7 @@ set -e
 # Configuration
 APP_NAME="Storage AI"
 BUNDLE_NAME="StorageAI"
-VERSION="2.12.0"
+VERSION="2.12.1"
 DMG_NAME="StorageAI-${VERSION}"
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"
