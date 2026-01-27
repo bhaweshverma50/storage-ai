@@ -27,6 +27,10 @@ actor ScanDataStore {
         cacheDirectory.appendingPathComponent("performance_history.json")
     }
     
+    private var mediaAnalysisURL: URL {
+        cacheDirectory.appendingPathComponent("media_analysis.json")
+    }
+    
     private init() {
         // Ensure cache directory exists
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
@@ -340,5 +344,303 @@ actor ScanDataStore {
     
     func clearPerformanceHistory() async {
         try? fileManager.removeItem(at: performanceHistoryURL)
+    }
+    
+    // MARK: - Media Analysis Data
+    
+    struct PersistedMediaItem: Codable {
+        let id: String
+        let path: String
+        let type: String
+        let sizeBytes: Int64
+        let width: Double?
+        let height: Double?
+        let duration: Double?
+        let createdAt: Date?
+        let modifiedAt: Date?
+        let subcategories: [String]
+    }
+    
+    struct PersistedMediaAnalysis: Codable {
+        let items: [PersistedMediaItem]
+        let stats: PersistedMediaStats
+        let analysisDate: Date
+        let version: String
+        
+        struct PersistedMediaStats: Codable {
+            let totalCount: Int
+            let totalSize: Int64
+            let photoCount: Int
+            let videoCount: Int
+            let screenshotCount: Int
+            let largeFileCount: Int
+            let oldMediaCount: Int
+            let duplicateCount: Int
+        }
+    }
+    
+    func saveMediaAnalysis(_ result: MediaAnalysisResult) async throws {
+        let persistedItems = result.items.map { item in
+            PersistedMediaItem(
+                id: item.id.uuidString,
+                path: item.url.path,
+                type: item.type.rawValue,
+                sizeBytes: item.sizeBytes,
+                width: item.dimensions.map { Double($0.width) },
+                height: item.dimensions.map { Double($0.height) },
+                duration: item.duration,
+                createdAt: item.createdAt,
+                modifiedAt: item.modifiedAt,
+                subcategories: item.subcategories.map { $0.rawValue }
+            )
+        }
+        
+        let persistedStats = PersistedMediaAnalysis.PersistedMediaStats(
+            totalCount: result.stats.totalCount,
+            totalSize: result.stats.totalSize,
+            photoCount: result.stats.photoCount,
+            videoCount: result.stats.videoCount,
+            screenshotCount: result.stats.screenshotCount,
+            largeFileCount: result.stats.largeFileCount,
+            oldMediaCount: result.stats.oldMediaCount,
+            duplicateCount: result.stats.duplicateCount
+        )
+        
+        let analysis = PersistedMediaAnalysis(
+            items: persistedItems,
+            stats: persistedStats,
+            analysisDate: Date(),
+            version: "1.0"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = .prettyPrinted
+        let data = try encoder.encode(analysis)
+        try data.write(to: mediaAnalysisURL)
+    }
+    
+    func loadMediaAnalysis() async throws -> (items: [MediaItem], stats: MediaAnalysisResult.MediaStats, analysisDate: Date)? {
+        guard fileManager.fileExists(atPath: mediaAnalysisURL.path) else {
+            return nil
+        }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let data = try Data(contentsOf: mediaAnalysisURL)
+        let analysis = try decoder.decode(PersistedMediaAnalysis.self, from: data)
+        
+        // Convert back to app models
+        let items = analysis.items.compactMap { persisted -> MediaItem? in
+            guard let type = MediaType(rawValue: persisted.type),
+                  let id = UUID(uuidString: persisted.id) else {
+                return nil
+            }
+            
+            let dimensions: CGSize?
+            if let width = persisted.width, let height = persisted.height {
+                dimensions = CGSize(width: width, height: height)
+            } else {
+                dimensions = nil
+            }
+            
+            let subcategories = Set(persisted.subcategories.compactMap { MediaSubcategory(rawValue: $0) })
+            
+            return MediaItem(
+                id: id,
+                url: URL(fileURLWithPath: persisted.path),
+                type: type,
+                sizeBytes: persisted.sizeBytes,
+                dimensions: dimensions,
+                duration: persisted.duration,
+                createdAt: persisted.createdAt,
+                modifiedAt: persisted.modifiedAt,
+                subcategories: subcategories
+            )
+        }
+        
+        let stats = MediaAnalysisResult.MediaStats(
+            totalCount: analysis.stats.totalCount,
+            totalSize: analysis.stats.totalSize,
+            photoCount: analysis.stats.photoCount,
+            videoCount: analysis.stats.videoCount,
+            screenshotCount: analysis.stats.screenshotCount,
+            largeFileCount: analysis.stats.largeFileCount,
+            oldMediaCount: analysis.stats.oldMediaCount,
+            duplicateCount: analysis.stats.duplicateCount
+        )
+        
+        return (items, stats, analysis.analysisDate)
+    }
+    
+    func clearMediaAnalysis() async {
+        try? fileManager.removeItem(at: mediaAnalysisURL)
+        // Also clear incremental file
+        try? fileManager.removeItem(at: mediaItemsIncrementalURL)
+    }
+    
+    func isMediaAnalysisStale(maxAgeHours: Int = 24) async -> Bool {
+        do {
+            guard let result = try await loadMediaAnalysis() else { return true }
+            let age = Date().timeIntervalSince(result.analysisDate)
+            return age > TimeInterval(maxAgeHours * 3600)
+        } catch {
+            return true
+        }
+    }
+    
+    // MARK: - Incremental Media Streaming
+    
+    /// URL for streaming media items during analysis
+    private var mediaItemsIncrementalURL: URL {
+        cacheDirectory.appendingPathComponent("media_items_incremental.jsonl")
+    }
+    
+    /// Start a new incremental media analysis session
+    /// Clears any previous incremental data
+    func startIncrementalMediaAnalysis() async {
+        try? fileManager.removeItem(at: mediaItemsIncrementalURL)
+        // Create empty file
+        fileManager.createFile(atPath: mediaItemsIncrementalURL.path, contents: nil)
+    }
+    
+    /// Append a batch of media items to the incremental cache
+    /// Uses JSON Lines format for efficient append-only writes
+    func appendMediaItems(_ items: [MediaItem]) async throws {
+        guard !items.isEmpty else { return }
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        
+        // Convert items to JSON Lines (one JSON object per line)
+        var lines = ""
+        for item in items {
+            let persisted = PersistedMediaItem(
+                id: item.id.uuidString,
+                path: item.url.path,
+                type: item.type.rawValue,
+                sizeBytes: item.sizeBytes,
+                width: item.dimensions.map { Double($0.width) },
+                height: item.dimensions.map { Double($0.height) },
+                duration: item.duration,
+                createdAt: item.createdAt,
+                modifiedAt: item.modifiedAt,
+                subcategories: item.subcategories.map { $0.rawValue }
+            )
+            
+            let data = try encoder.encode(persisted)
+            if let jsonString = String(data: data, encoding: .utf8) {
+                lines += jsonString + "\n"
+            }
+        }
+        
+        // Append to file
+        if let data = lines.data(using: .utf8) {
+            if let fileHandle = try? FileHandle(forWritingTo: mediaItemsIncrementalURL) {
+                defer { try? fileHandle.close() }
+                try fileHandle.seekToEnd()
+                try fileHandle.write(contentsOf: data)
+            } else {
+                // File doesn't exist, create it
+                try data.write(to: mediaItemsIncrementalURL)
+            }
+        }
+    }
+    
+    /// Load all incrementally saved media items
+    func loadIncrementalMediaItems() async throws -> [MediaItem] {
+        guard fileManager.fileExists(atPath: mediaItemsIncrementalURL.path) else {
+            return []
+        }
+        
+        let content = try String(contentsOf: mediaItemsIncrementalURL, encoding: .utf8)
+        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        
+        var items: [MediaItem] = []
+        items.reserveCapacity(lines.count)
+        
+        for line in lines {
+            guard let data = line.data(using: .utf8),
+                  let persisted = try? decoder.decode(PersistedMediaItem.self, from: data),
+                  let type = MediaType(rawValue: persisted.type),
+                  let id = UUID(uuidString: persisted.id) else {
+                continue
+            }
+            
+            let dimensions: CGSize?
+            if let width = persisted.width, let height = persisted.height {
+                dimensions = CGSize(width: width, height: height)
+            } else {
+                dimensions = nil
+            }
+            
+            let subcategories = Set(persisted.subcategories.compactMap { MediaSubcategory(rawValue: $0) })
+            
+            let item = MediaItem(
+                id: id,
+                url: URL(fileURLWithPath: persisted.path),
+                type: type,
+                sizeBytes: persisted.sizeBytes,
+                dimensions: dimensions,
+                duration: persisted.duration,
+                createdAt: persisted.createdAt,
+                modifiedAt: persisted.modifiedAt,
+                subcategories: subcategories
+            )
+            items.append(item)
+        }
+        
+        return items
+    }
+    
+    /// Finalize incremental analysis by saving full analysis result
+    /// and cleaning up incremental file
+    func finalizeIncrementalAnalysis(stats: MediaAnalysisResult.MediaStats) async throws {
+        let items = try await loadIncrementalMediaItems()
+        
+        let persistedItems = items.map { item in
+            PersistedMediaItem(
+                id: item.id.uuidString,
+                path: item.url.path,
+                type: item.type.rawValue,
+                sizeBytes: item.sizeBytes,
+                width: item.dimensions.map { Double($0.width) },
+                height: item.dimensions.map { Double($0.height) },
+                duration: item.duration,
+                createdAt: item.createdAt,
+                modifiedAt: item.modifiedAt,
+                subcategories: item.subcategories.map { $0.rawValue }
+            )
+        }
+        
+        let persistedStats = PersistedMediaAnalysis.PersistedMediaStats(
+            totalCount: stats.totalCount,
+            totalSize: stats.totalSize,
+            photoCount: stats.photoCount,
+            videoCount: stats.videoCount,
+            screenshotCount: stats.screenshotCount,
+            largeFileCount: stats.largeFileCount,
+            oldMediaCount: stats.oldMediaCount,
+            duplicateCount: stats.duplicateCount
+        )
+        
+        let analysis = PersistedMediaAnalysis(
+            items: persistedItems,
+            stats: persistedStats,
+            analysisDate: Date(),
+            version: "1.0"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = .prettyPrinted
+        let data = try encoder.encode(analysis)
+        try data.write(to: mediaAnalysisURL)
+        
+        // Clean up incremental file
+        try? fileManager.removeItem(at: mediaItemsIncrementalURL)
     }
 }

@@ -13,6 +13,8 @@ struct SettingsView: View {
     @State private var showClearCacheAlert = false
     @State private var showCacheCleared = false
     @State private var showOllamaSetup = false
+    @State private var showDevModeToast = false
+    @State private var versionTapCount = 0
     
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accentTheme) private var accentTheme
@@ -45,8 +47,20 @@ struct SettingsView: View {
 
                 // Excluded Paths
                 excludedPathsSection
+                
+                // Developer Settings (only visible when dev mode is enabled)
+                if appState.isDevModeEnabled {
+                    DevSettingsSection()
+                }
             }
             .padding(24)
+        }
+        .overlay(alignment: .bottom) {
+            if showDevModeToast {
+                DevModeToast(isEnabled: appState.isDevModeEnabled)
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .task {
             await checkOllamaStatus()
@@ -135,6 +149,32 @@ struct SettingsView: View {
                         Text("Version \(AppVersion.current)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .onTapGesture {
+                                versionTapCount += 1
+                                
+                                // Reset tap count after 1 second
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                    if versionTapCount < 3 {
+                                        versionTapCount = 0
+                                    }
+                                }
+                                
+                                // Toggle dev mode on triple tap
+                                if versionTapCount >= 3 {
+                                    versionTapCount = 0
+                                    withAnimation {
+                                        appState.isDevModeEnabled.toggle()
+                                        showDevModeToast = true
+                                    }
+                                    
+                                    // Hide toast after 2 seconds
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                        withAnimation {
+                                            showDevModeToast = false
+                                        }
+                                    }
+                                }
+                            }
                         
                         Text("Smart Mac storage analyzer")
                             .font(.caption2)

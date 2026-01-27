@@ -12,9 +12,9 @@ struct CategoryDetailView: View {
                     header
                     
                     // Bento Grid
-                    categoryBentoGrid(width: geometry.size.width - 48)
+                    categoryBentoGrid(width: geometry.size.width - 40)
                 }
-                .padding(24)
+                .padding(20)
             }
         }
         .sheet(item: $selectedCategory) { category in
@@ -27,7 +27,7 @@ struct CategoryDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Categories")
-                .font(.title.weight(.semibold))
+                .font(.title2.weight(.bold))
             
             Text("Explore storage usage by category")
                 .font(.subheadline)
@@ -38,13 +38,11 @@ struct CategoryDetailView: View {
     // MARK: - Bento Grid
     private func categoryBentoGrid(width: CGFloat) -> some View {
         let spacing: CGFloat = 16
-        let columns = 3
-        let cardWidth = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
+        // Min width for cards to ensure they don't get too small
+        let minCardWidth: CGFloat = 200
+        let columns = [GridItem(.adaptive(minimum: minCardWidth), spacing: spacing)]
         
-        return LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns),
-            spacing: spacing
-        ) {
+        return LazyVGrid(columns: columns, spacing: spacing) {
             ForEach(sortedBuckets) { bucket in
                 CategoryBentoCard(
                     bucket: bucket,
@@ -63,13 +61,14 @@ struct CategoryDetailView: View {
     }
 }
 
-// MARK: - Category Bento Card
+// MARK: - Category Bento Card (Refined)
 struct CategoryBentoCard: View {
     let bucket: StorageBucket
     let totalBytes: Int64
     let fileCount: Int
     let action: () -> Void
     
+    @State private var isHovered = false
     @Environment(\.colorScheme) private var colorScheme
     
     private var percentage: Double {
@@ -82,15 +81,23 @@ struct CategoryBentoCard: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Header with icon
                 HStack {
-                    Image(systemName: bucket.category.icon)
-                        .font(.title2)
-                        .foregroundStyle(bucket.category.color)
+                    ZStack {
+                        Circle()
+                            .fill(bucket.category.color.opacity(0.15))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: bucket.category.icon)
+                            .font(.title3)
+                            .foregroundStyle(bucket.category.color)
+                    }
                     
                     Spacer()
                     
                     Text(Formatters.percentage(percentage))
-                        .font(.caption.weight(.medium))
+                        .font(.callout.weight(.medium))
                         .foregroundStyle(bucket.category.color)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(bucket.category.color.opacity(0.1), in: Capsule())
                 }
                 
                 Spacer()
@@ -98,11 +105,11 @@ struct CategoryBentoCard: View {
                 // Name and size
                 VStack(alignment: .leading, spacing: 4) {
                     Text(bucket.category.displayName)
-                        .font(.subheadline.weight(.medium))
+                        .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
                     
                     Text(Formatters.bytes(bucket.bytes))
-                        .font(.title2.weight(.semibold))
+                        .font(.title3.weight(.bold)) // Improved hierarchy
                         .foregroundStyle(.primary)
                 }
                 
@@ -111,10 +118,10 @@ struct CategoryBentoCard: View {
                 // Progress bar
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3)
+                        Capsule()
                             .fill(Color.secondary.opacity(0.15))
                         
-                        RoundedRectangle(cornerRadius: 3)
+                        Capsule()
                             .fill(bucket.category.color)
                             .frame(width: max(0, geometry.size.width * CGFloat(percentage / 100)))
                     }
@@ -124,36 +131,39 @@ struct CategoryBentoCard: View {
                 // File count
                 HStack {
                     Text("\(Formatters.number(fileCount)) files")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     
                     Spacer()
                     
                     Image(systemName: "chevron.right")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.tertiary)
+                        .opacity(isHovered ? 1 : 0.5)
                 }
-                .padding(.top, 8)
+                .padding(.top, 12)
             }
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            }
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(isHovered ? 0.1 : 0.05), radius: isHovered ? 8 : 4, x: 0, y: 2)
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 16)
                     .strokeBorder(
-                        bucket.category.color.opacity(0.2),
+                        bucket.category.color.opacity(isHovered ? 0.3 : 0),
                         lineWidth: 1
                     )
             }
+            .scaleEffect(isHovered ? 1.01 : 1.0)
+            .animation(.easeOut(duration: 0.2), value: isHovered)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
-// MARK: - Category Files Sheet
+// MARK: - Category Files Sheet (Virtualization Fix)
 struct CategoryFilesSheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
@@ -177,23 +187,45 @@ struct CategoryFilesSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             sheetHeader
+                .padding(16)
+                .background(.ultraThinMaterial)
+            
             Divider()
 
             if cachedFilteredFiles.isEmpty {
                 EmptyStateView(
                     icon: "doc.text.magnifyingglass",
                     title: "No Files Found",
-                    message: searchText.isEmpty ? "No files in this category" : "No files match your search"
+                    message: searchText.isEmpty ? "No files in this category" : "No files match \"\(searchText)\""
                 )
             } else {
-                fileList
+                // Use List for Virtualization (Fixes scroll lag on 1000+ files)
+                List(selection: $selection) {
+                    ForEach(cachedFilteredFiles) { entry in
+                        FileRow(entry: entry)
+                            .tag(entry.id) // For selection
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                            .listRowSeparator(.visible)
+                            .contextMenu {
+                                Button("Reveal in Finder") {
+                                    NSWorkspace.shared.selectFile(entry.url.path, inFileViewerRootedAtPath: entry.url.deletingLastPathComponent().path)
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    selection = [entry.id]
+                                    showDeleteAlert = true
+                                }
+                            }
+                    }
+                }
+                .listStyle(.plain) // Clean look
             }
 
             if !selection.isEmpty {
                 footer
             }
         }
-        .frame(width: 700, height: 600)
+        .frame(width: 800, height: 600) // Increased width for better table view
         .alert("Delete \(selection.count) files?", isPresented: $showDeleteAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
@@ -207,6 +239,7 @@ struct CategoryFilesSheet: View {
         .onChange(of: sortOrder) { _, _ in updateFilteredFiles() }
     }
 
+    // ... (Keep existing updateFilteredFiles logic)
     private func updateFilteredFiles() {
         var files = allFiles
 
@@ -228,11 +261,13 @@ struct CategoryFilesSheet: View {
         cachedFilteredFiles = files
     }
     
+    // ... (Keep existing header/footer logic, just minor style tweaks)
     private var sheetHeader: some View {
         HStack {
             Image(systemName: category.icon)
                 .font(.title2)
                 .foregroundStyle(category.color)
+                .frame(width: 32)
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.displayName)
@@ -255,31 +290,14 @@ struct CategoryFilesSheet: View {
             
             TextField("Search...", text: $searchText)
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 150)
+                .frame(width: 180)
             
             Button { dismiss() } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
-        }
-        .padding(16)
-    }
-    
-    private var fileList: some View {
-        List(cachedFilteredFiles, selection: $selection) { entry in
-            FileRow(entry: entry)
-                .contextMenu {
-                    Button("Reveal in Finder") {
-                        NSWorkspace.shared.selectFile(entry.url.path, inFileViewerRootedAtPath: entry.url.deletingLastPathComponent().path)
-                    }
-                    Divider()
-                    Button("Delete", role: .destructive) {
-                        selection = [entry.id]
-                        showDeleteAlert = true
-                    }
-                }
         }
     }
     
@@ -313,6 +331,7 @@ struct CategoryFilesSheet: View {
         }
         .padding(16)
         .background(.ultraThinMaterial)
+        .overlay(Divider(), alignment: .top)
     }
     
     private var allFiles: [FileEntry] {
@@ -323,6 +342,7 @@ struct CategoryFilesSheet: View {
         cachedFilteredFiles.reduce(0) { $0 + $1.sizeBytes }
     }
 
+    // ... (Keep existing deleteSelected logic)
     private func deleteSelected() {
         let toDelete = cachedFilteredFiles.filter { selection.contains($0.id) }
         
@@ -331,104 +351,71 @@ struct CategoryFilesSheet: View {
         
         for file in toDelete {
             do {
-                // Try moving to Trash first (works better for files in use)
                 try FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
                 deletedIds.insert(file.id)
             } catch {
-                // If Trash fails, try direct removal
                 do {
                     try FileManager.default.removeItem(at: file.url)
                     deletedIds.insert(file.id)
                 } catch let removeError {
-                    // Record the failure but continue with other files
                     failedFiles.append((file.url.lastPathComponent, removeError.localizedDescription))
                 }
             }
         }
         
-        // Update state for successfully deleted files
         if !deletedIds.isEmpty {
             appState.scanService.removeEntries(category: category, ids: deletedIds)
             selection.subtract(deletedIds)
-            
-            // Refresh disk info
             appState.scanService.refreshDiskInfo()
         }
         
-        // Show error message for failed files
         if failedFiles.isEmpty {
             deleteError = nil
         } else if deletedIds.isEmpty {
-            // All failed
-            deleteError = "\"\(failedFiles[0].name)\" couldn't be removed. It may be in use."
+            deleteError = "\"\(failedFiles[0].name)\" couldn't be removed."
         } else {
-            // Partial success
-            deleteError = "Deleted \(deletedIds.count) files. \(failedFiles.count) couldn't be removed (may be in use)."
+            deleteError = "Deleted \(deletedIds.count) files. \(failedFiles.count) failed."
         }
         
-        // Refresh the file list
         updateFilteredFiles()
     }
 }
 
-// MARK: - File Row
+// MARK: - File Row (Optimized)
 struct FileRow: View {
     let entry: FileEntry
-    @State private var icon: NSImage?
 
     var body: some View {
         HStack(spacing: 12) {
-            Group {
-                if let icon = icon {
-                    Image(nsImage: icon)
-                        .resizable()
-                } else {
-                    Image(systemName: "doc")
-                        .resizable()
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 28, height: 28)
-
+            // Optimized Icon
+            CachedAsyncIcon(path: entry.url.path, size: 28)
+            
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.url.lastPathComponent)
-                    .font(.subheadline)
+                    .font(.body) // Larger font for readability
                     .lineLimit(1)
+                    .truncationMode(.middle) // Middle truncation is better for filenames
 
                 Text(entry.url.deletingLastPathComponent().path)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .truncationMode(.head) // Head truncation shows folder context better
             }
 
             Spacer()
 
             if let date = entry.modifiedAt {
                 Text(Formatters.relativeDate(date))
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .frame(width: 80, alignment: .trailing)
             }
 
             Text(Formatters.bytes(entry.sizeBytes))
-                .font(.caption.monospaced())
+                .font(.body.monospacedDigit()) // Monospaced numbers align better
                 .foregroundStyle(.secondary)
-                .frame(width: 70, alignment: .trailing)
-        }
-        .padding(.vertical, 2)
-        .task {
-            icon = await loadIcon()
+                .frame(width: 80, alignment: .trailing)
         }
     }
-
-    private func loadIcon() async -> NSImage {
-        await Task.detached {
-            NSWorkspace.shared.icon(forFile: entry.url.path)
-        }.value
-    }
-}
-
-#Preview {
-    CategoryDetailView()
-        .environmentObject(AppState())
-        .frame(width: 900, height: 700)
 }

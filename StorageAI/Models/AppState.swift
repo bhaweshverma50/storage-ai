@@ -78,6 +78,7 @@ final class AppState: ObservableObject {
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .system
     @AppStorage("colorTheme") var colorTheme: ColorTheme = .blue
     @AppStorage("fontSize") var fontSize: FontSize = .medium
+    @AppStorage("isDevModeEnabled") var isDevModeEnabled = false
     @Published var settings = AppSettings()
     let scanService = ScanService()
     let ollamaSetupService = OllamaSetupService()

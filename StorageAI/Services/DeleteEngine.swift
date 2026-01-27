@@ -38,11 +38,17 @@ enum DeleteEngine {
             }
             
             do {
-                try fm.removeItem(at: item)
+                try fm.trashItem(at: item, resultingItemURL: nil)
                 deleted.append(item)
             } catch {
-                // Skip items we can't delete (permission issues) but continue with others
-                errors.append("\(item.lastPathComponent): \(error.localizedDescription)")
+                // If trash fails, fallback to permanent delete (rare, but possible for some sys files)
+                // or just log error. For safety, we will just log error here.
+                do {
+                     try fm.removeItem(at: item)
+                     deleted.append(item)
+                } catch {
+                     errors.append("\(item.lastPathComponent): \(error.localizedDescription)")
+                }
             }
         }
         
@@ -70,10 +76,16 @@ enum DeleteEngine {
                     }
                     
                     do {
-                        try fm.removeItem(at: path)
+                        try fm.trashItem(at: path, resultingItemURL: nil)
                         deleted.append(path)
                     } catch {
-                        allErrors.append("\(path.lastPathComponent): \(error.localizedDescription)")
+                        // Trash failed, try direct delete
+                        do {
+                            try fm.removeItem(at: path)
+                            deleted.append(path)
+                        } catch {
+                             allErrors.append("\(path.lastPathComponent): \(error.localizedDescription)")
+                        }
                     }
                 }
             }

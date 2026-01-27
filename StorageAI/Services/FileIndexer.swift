@@ -33,6 +33,68 @@ final class CancellationToken: @unchecked Sendable {
     }
 }
 
+/// A simple Min-Heap Priority Queue for tracking top N largest files
+/// We keep the *smallest* of the large files at the root so we can easily replace it
+struct FileHeap {
+    private var heap: [FileEntry]
+    private let maxSize: Int
+    
+    init(maxSize: Int) {
+        self.heap = []
+        self.maxSize = maxSize
+    }
+    
+    var files: [FileEntry] {
+        return heap
+    }
+    
+    mutating func insert(_ file: FileEntry) {
+        if heap.count < maxSize {
+            heap.append(file)
+            siftUp(heap.count - 1)
+        } else if file.sizeBytes > heap[0].sizeBytes {
+            heap[0] = file
+            siftDown(0)
+        }
+    }
+    
+    private mutating func siftUp(_ index: Int) {
+        var child = index
+        var parent = (child - 1) / 2
+        
+        while child > 0 && heap[child].sizeBytes < heap[parent].sizeBytes {
+            heap.swapAt(child, parent)
+            child = parent
+            parent = (child - 1) / 2
+        }
+    }
+    
+    private mutating func siftDown(_ index: Int) {
+        var parent = index
+        
+        while true {
+            let leftChild = 2 * parent + 1
+            let rightChild = 2 * parent + 2
+            var candidate = parent
+            
+            if leftChild < heap.count && heap[leftChild].sizeBytes < heap[candidate].sizeBytes {
+                candidate = leftChild
+            }
+            
+            if rightChild < heap.count && heap[rightChild].sizeBytes < heap[candidate].sizeBytes {
+                candidate = rightChild
+            }
+            
+            if candidate == parent {
+                return
+            }
+            
+            heap.swapAt(parent, candidate)
+            parent = candidate
+        }
+    }
+}
+
 enum FileIndexer {
     static func scan(
         roots: [URL],
@@ -47,14 +109,31 @@ enum FileIndexer {
     ) throws -> ScanResult {
         // Start with initial values if resuming, otherwise start fresh
         var buckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
-        var filesByCategory = initialFiles ?? StorageCategory.allCases.reduce(into: [StorageCategory: [FileEntry]]()) { $0[$1] = [] }
-        // Track file counts per category
+        
+        // Use Heaps for tracking top files per category (O(log N) insertion)
+        var fileHeaps: [StorageCategory: FileHeap] = [:]
+        for category in StorageCategory.allCases {
+            fileHeaps[category] = FileHeap(maxSize: 1000)
+        }
+        
+        // If resuming, re-populate heaps (this is O(N log N) but N is small (1000))
+        if let initialFiles = initialFiles {
+            for (category, files) in initialFiles {
+                for file in files {
+                    fileHeaps[category]?.insert(file)
+                }
+            }
+        }
+
         var categoryFileCounts: [StorageCategory: Int] = initialFiles?.mapValues { $0.count } ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
         var scannedFiles = initialScannedFiles
         var scannedBytes: Int64 = initialScannedBytes
         var lastProgressUpdate = Date()
 
         let excluded = Set(excludedPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path.lowercased() })
+        
+        // Get common system paths for faster classification
+        let classifier = StorageClassifier()
 
         // Send initial progress
         progress(ScanUpdate(
@@ -109,98 +188,97 @@ enum FileIndexer {
                 continue
             }
 
+            var batchCount = 0
+            let batchSize = 100  // Process in batches to release memory
+            
             for case let url as URL in fileEnum {
                 // Check cancellation frequently
                 if cancellationToken.isCancelled {
                     throw FileIndexerError.cancelled
                 }
-
-                let standardPath = url.standardizedFileURL.path
-                let lowercasePath = standardPath.lowercased()
                 
-                // Skip excluded paths
-                if excluded.contains(where: { lowercasePath.hasPrefix($0) }) {
-                    fileEnum.skipDescendants()
-                    continue
+                // Use autoreleasepool every batch to release Objective-C objects
+                let shouldDrainPool = batchCount >= batchSize
+                if shouldDrainPool {
+                    batchCount = 0
                 }
                 
-                // Skip problematic system paths
-                if lowercasePath.contains("/timemachine") ||
-                   lowercasePath.contains("/.spotlight-v100") ||
-                   lowercasePath.contains("/.fseventsd") ||
-                   lowercasePath.contains("/.trash") ||
-                   lowercasePath.contains("/volumes/") && !lowercasePath.contains("/volumes/macintosh") {
-                    fileEnum.skipDescendants()
-                    continue
-                }
-
-                do {
-                    let values = try url.resourceValues(forKeys: [
-                        .isDirectoryKey,
-                        .isRegularFileKey,
-                        .isHiddenKey,
-                        .fileSizeKey,
-                        .totalFileAllocatedSizeKey,
-                        .contentModificationDateKey
-                    ])
-
-                    // Skip directories (we still traverse into them)
-                    if values.isDirectory == true {
-                        continue
+                autoreleasepool {
+                    let standardPath = url.standardizedFileURL.path
+                    let lowercasePath = standardPath.lowercased()
+                    
+                    // Skip excluded paths
+                    if excluded.contains(where: { lowercasePath.hasPrefix($0) }) {
+                        fileEnum.skipDescendants()
+                        return
+                    }
+                    
+                    // Skip problematic system paths
+                    if lowercasePath.contains("/timemachine") ||
+                       lowercasePath.contains("/.spotlight-v100") ||
+                       lowercasePath.contains("/.fseventsd") ||
+                       lowercasePath.contains("/.trash") ||
+                       lowercasePath.contains("/volumes/") && !lowercasePath.contains("/volumes/macintosh") {
+                        fileEnum.skipDescendants()
+                        return
                     }
 
-                    guard values.isRegularFile == true else { continue }
+                    do {
+                        let values = try url.resourceValues(forKeys: [
+                            .isDirectoryKey,
+                            .isRegularFileKey,
+                            .isHiddenKey,
+                            .fileSizeKey,
+                            .totalFileAllocatedSizeKey,
+                            .contentModificationDateKey
+                        ])
 
-                    let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
-                    scannedFiles += 1
-                    scannedBytes += size
+                        // Skip directories (we still traverse into them)
+                        if values.isDirectory == true {
+                            return
+                        }
 
-                    let category = StorageClassifier.category(for: url)
-                    buckets[category, default: 0] += size
-                    categoryFileCounts[category, default: 0] += 1  // Track file count per category
+                        guard values.isRegularFile == true else { return }
 
-                    // Store files larger than 1MB for display, with max limit per category
-                    let maxFilesPerCategory = 1000
-                    if size > 1_000_000 {
-                        var categoryFiles = filesByCategory[category, default: []]
+                        let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+                        scannedFiles += 1
+                        scannedBytes += size
 
-                        if categoryFiles.count < maxFilesPerCategory {
-                            categoryFiles.append(FileEntry(
+                        let category = classifier.classify(url: url)
+                        buckets[category, default: 0] += size
+                        categoryFileCounts[category, default: 0] += 1
+
+                        // Store files larger than 1MB for display
+                        // Using Heap insert is O(log N) instead of Array O(N) sort/insert
+                        if size > 1_000_000 {
+                            fileHeaps[category]?.insert(FileEntry(
                                 url: url,
                                 sizeBytes: size,
                                 modifiedAt: values.contentModificationDate
                             ))
-                        } else if let minIndex = categoryFiles.indices.min(by: { categoryFiles[$0].sizeBytes < categoryFiles[$1].sizeBytes }),
-                                  categoryFiles[minIndex].sizeBytes < size {
-                            // Replace smallest file if new file is larger
-                            categoryFiles[minIndex] = FileEntry(
-                                url: url,
-                                sizeBytes: size,
-                                modifiedAt: values.contentModificationDate
-                            )
                         }
 
-                        filesByCategory[category] = categoryFiles
+                        // Update progress every 5 seconds OR every 2000 files
+                        let now = Date()
+                        let timeSinceLastUpdate = now.timeIntervalSince(lastProgressUpdate)
+                        if timeSinceLastUpdate >= 5.0 || scannedFiles % 2000 == 0 {
+                            lastProgressUpdate = now
+                            progress(ScanUpdate(
+                                scannedFiles: scannedFiles,
+                                scannedBytes: scannedBytes,
+                                currentPath: url.path,
+                                phase: phase,
+                                buckets: buckets,
+                                fileCounts: categoryFileCounts
+                            ))
+                        }
+                    } catch {
+                        // Skip files we can't read
+                        return
                     }
-
-                    // Update progress every 5 seconds OR every 500 files, whichever comes first
-                    let now = Date()
-                    let timeSinceLastUpdate = now.timeIntervalSince(lastProgressUpdate)
-                    if timeSinceLastUpdate >= 5.0 || scannedFiles % 500 == 0 {
-                        lastProgressUpdate = now
-                        progress(ScanUpdate(
-                            scannedFiles: scannedFiles,
-                            scannedBytes: scannedBytes,
-                            currentPath: url.path,
-                            phase: phase,
-                            buckets: buckets,
-                            fileCounts: categoryFileCounts
-                        ))
-                    }
-                } catch {
-                    // Skip files we can't read - this is normal for permission-denied
-                    continue
                 }
+                
+                batchCount += 1
             }
         }
 
@@ -214,14 +292,21 @@ enum FileIndexer {
             fileCounts: categoryFileCounts
         ))
         
+        // Convert heaps back to sorted arrays for final result
+        var finalFiles: [StorageCategory: [FileEntry]] = [:]
+        for (category, heap) in fileHeaps {
+            finalFiles[category] = heap.files.sorted { $0.sizeBytes > $1.sizeBytes }
+        }
+        
         let bucketList = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: buckets[$0, default: 0]) }
-        return ScanResult(buckets: bucketList, filesByCategory: filesByCategory)
+        return ScanResult(buckets: bucketList, filesByCategory: finalFiles)
     }
     
     private static func determinePhase(for url: URL) -> ScanPhase {
         let path = url.path.lowercased()
         let homeDir = FileManager.default.homeDirectoryForCurrentUser.path.lowercased()
         
+        // Use standard directory checks instead of hardcoded strings where possible
         if path.hasPrefix("/applications") {
             return .scanningApplications
         } else if path.hasPrefix("/system") {
@@ -266,25 +351,52 @@ enum FileIndexer {
     }
 }
 
-enum StorageClassifier {
-    private static let homeDir = FileManager.default.homeDirectoryForCurrentUser.path.lowercased()
+class StorageClassifier {
+    // Cache standard paths to avoid repeated lookups
+    private let homeDir: String
+    private let userDocuments: String
+    private let userDesktop: String
+    private let userDownloads: String
+    private let userMovies: String
+    private let userMusic: String
+    private let userPictures: String
+    private let userLibrary: String
     
-    static func category(for url: URL) -> StorageCategory {
+    // Extensions sets
+    private let mediaExtensions: Set<String>
+    private let devExtensions: Set<String>
+    
+    init() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path.lowercased()
+        self.homeDir = home
+        self.userDocuments = home + "/documents/"
+        self.userDesktop = home + "/desktop/"
+        self.userDownloads = home + "/downloads/"
+        self.userMovies = home + "/movies/"
+        self.userMusic = home + "/music/"
+        self.userPictures = home + "/pictures/"
+        self.userLibrary = home + "/library/"
+        
+        self.mediaExtensions = Set(["mp4", "mov", "avi", "mkv", "mp3", "aac", "flac", "wav", 
+                                   "m4a", "m4v", "jpg", "jpeg", "png", "gif", "heic", "raw",
+                                   "tiff", "bmp", "webp", "svg", "pdf"])
+        
+        self.devExtensions = Set(["swift", "m", "h", "c", "cpp", "py", "js", "ts", "json", 
+                                 "xml", "plist", "xcodeproj", "xcworkspace"])
+    }
+    
+    func classify(url: URL) -> StorageCategory {
         let path = url.path.lowercased()
         let pathExtension = url.pathExtension.lowercased()
         
-        // 1. Check Applications first (highest priority for .app bundles)
+        // 1. Applications
         if path.hasPrefix("/applications") || 
            path.contains("/applications/") ||
            pathExtension == "app" {
             return .applications
         }
         
-        // 2. Check for user Documents/Desktop/Downloads (before Library check)
-        let userDocuments = homeDir + "/documents/"
-        let userDesktop = homeDir + "/desktop/"
-        let userDownloads = homeDir + "/downloads/"
-        
+        // 2. Documents/Desktop/Downloads
         if path.hasPrefix(userDocuments) || 
            path.hasPrefix(userDesktop) || 
            path.hasPrefix(userDownloads) ||
@@ -294,14 +406,7 @@ enum StorageClassifier {
             return .documents
         }
         
-        // 3. Check for Media files (by location and extension)
-        let userMovies = homeDir + "/movies/"
-        let userMusic = homeDir + "/music/"
-        let userPictures = homeDir + "/pictures/"
-        let mediaExtensions = Set(["mp4", "mov", "avi", "mkv", "mp3", "aac", "flac", "wav", 
-                                   "m4a", "m4v", "jpg", "jpeg", "png", "gif", "heic", "raw",
-                                   "tiff", "bmp", "webp", "svg", "pdf"])
-        
+        // 3. Media
         if path.hasPrefix(userMovies) || 
            path.hasPrefix(userMusic) || 
            path.hasPrefix(userPictures) ||
@@ -309,7 +414,7 @@ enum StorageClassifier {
             return .media
         }
         
-        // 4. Check for System files
+        // 4. System
         if path.hasPrefix("/system") || 
            path.hasPrefix("/library") ||
            path.hasPrefix("/usr") ||
@@ -319,8 +424,7 @@ enum StorageClassifier {
             return .system
         }
         
-        // 5. Check for Library/Caches/Containers (App support data)
-        let userLibrary = homeDir + "/library/"
+        // 5. Library/Caches (App Data)
         if path.hasPrefix(userLibrary) || 
            path.contains("/library/caches/") ||
            path.contains("/library/application support/") ||
@@ -330,9 +434,7 @@ enum StorageClassifier {
             return .libraries
         }
         
-        // 6. Developer-related files
-        let devExtensions = Set(["swift", "m", "h", "c", "cpp", "py", "js", "ts", "json", 
-                                 "xml", "plist", "xcodeproj", "xcworkspace"])
+        // 6. Developer
         if devExtensions.contains(pathExtension) ||
            path.contains("/developer/") ||
            path.contains("/deriveddata/") ||
@@ -341,5 +443,10 @@ enum StorageClassifier {
         }
         
         return .other
+    }
+    
+    // Static helper for backward compatibility if needed, though instance method is preferred for perf
+    static func category(for url: URL) -> StorageCategory {
+        return StorageClassifier().classify(url: url)
     }
 }

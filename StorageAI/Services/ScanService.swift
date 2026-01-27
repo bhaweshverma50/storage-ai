@@ -165,6 +165,9 @@ final class ScanService: ObservableObject {
     func startScan(settings: AppSettings, roots: [URL]) {
         guard !isScanning else { return }
         
+        // Register task with resource monitor
+        ResourceMonitor.shared.registerTask(name: "Scan")
+        
         // Check if this is a resume BEFORE any state changes
         let isResume = scanState == .partial && summary.totalBytes > 0
         
@@ -244,17 +247,26 @@ final class ScanService: ObservableObject {
         scanTask = Task { [weak self] in
             guard let self = self else { return }
             
+            // Track last UI update to throttle updates and reduce memory pressure
+            // Use actor-isolated state to avoid creating Tasks for each update
+            let progressActor = ProgressThrottler(minInterval: 1.0)
+            
             // Run the scan on a background thread with lower priority for efficiency
-            let result: Result<ScanResult, Error> = await Task.detached(priority: .utility) {
+            let result: Result<ScanResult, Error> = await Task.detached(priority: .utility) { [weak self] in
                 do {
                     let scanResult = try FileIndexer.scan(
                         roots: roots,
                         includeHidden: includeHidden,
                         excludedPaths: excludedPaths,
                         cancellationToken: token,
-                        progress: { [weak self] update in
-                            // Update progress AND summary on main actor
-                            Task { @MainActor in
+                        progress: { update in
+                            // Use fire-and-forget dispatch instead of Task to avoid accumulation
+                            // Only update if enough time has passed (throttling)
+                            guard progressActor.shouldUpdate() else { return }
+                            guard !token.isCancelled else { return }
+                            
+                            // Dispatch to main thread without creating a Task
+                            DispatchQueue.main.async { [weak self] in
                                 guard let self = self, !token.isCancelled else { return }
                                 
                                 // Calculate elapsed time and estimate
@@ -298,6 +310,7 @@ final class ScanService: ObservableObject {
             guard !token.isCancelled else {
                 await MainActor.run {
                     self.isScanning = false
+                    ResourceMonitor.shared.unregisterTask(name: "Scan")
                 }
                 return
             }
@@ -347,6 +360,7 @@ final class ScanService: ObservableObject {
                 }
                 
                 self.isScanning = false
+                ResourceMonitor.shared.unregisterTask(name: "Scan")
             }
         }
     }
@@ -361,6 +375,9 @@ final class ScanService: ObservableObject {
         scanTask = nil
         periodicSaveTask?.cancel()
         periodicSaveTask = nil
+        
+        // Unregister task from resource monitor
+        ResourceMonitor.shared.unregisterTask(name: "Scan")
         
         // Mark as partial scan
         scanState = .partial
@@ -442,5 +459,49 @@ final class ScanService: ObservableObject {
     
     func clearCache() async {
         await ScanDataStore.shared.clear()
+    }
+    
+    /// Clears scan results from memory to free up RAM
+    /// Call this when navigating away from views that need scan data
+    func clearInMemoryResults() {
+        filesByCategory = [:]
+        fileCounts = [:]
+    }
+    
+    /// Full reset - clears both memory and disk cache
+    func fullReset() async {
+        clearInMemoryResults()
+        let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
+        summary = StorageSummary(buckets: initialBuckets)
+        progress = ScanProgress()
+        lastScanDate = nil
+        scanState = .neverScanned
+        await ScanDataStore.shared.clear()
+    }
+}
+
+// MARK: - Progress Throttler
+
+/// Thread-safe throttler to limit progress updates without creating Tasks
+final class ProgressThrottler: @unchecked Sendable {
+    private var lastUpdate: Date
+    private let minInterval: TimeInterval
+    private let lock = NSLock()
+    
+    init(minInterval: TimeInterval) {
+        self.minInterval = minInterval
+        self.lastUpdate = Date.distantPast
+    }
+    
+    func shouldUpdate() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let now = Date()
+        if now.timeIntervalSince(lastUpdate) >= minInterval {
+            lastUpdate = now
+            return true
+        }
+        return false
     }
 }

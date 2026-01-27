@@ -14,6 +14,7 @@ struct DashboardView: View {
     enum NavigationItem: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case categories = "Categories"
+        case media = "Media"
         case applications = "Applications"
         case cleanup = "Cleanup"
         case settings = "Settings"
@@ -24,6 +25,7 @@ struct DashboardView: View {
             switch self {
             case .overview: return "chart.pie"
             case .categories: return "folder"
+            case .media: return "photo.stack"
             case .applications: return "square.grid.2x2"
             case .cleanup: return "trash"
             case .settings: return "gearshape"
@@ -32,12 +34,19 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detailView
+        VStack(spacing: 0) {
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                detailView
+            }
+            .tint(accentTheme)
+            
+            // Developer status bar (only visible when dev mode is enabled)
+            if appState.isDevModeEnabled {
+                DevStatusBar()
+            }
         }
-        .tint(accentTheme)
         .task {
             await loadInitialData()
         }
@@ -171,6 +180,8 @@ struct DashboardView: View {
                 .environmentObject(appState)
             case .categories:
                 CategoryDetailView()
+            case .media:
+                MediaViewerView()
             case .applications:
                 AppDetailView(apps: topApps) { _ in
                     // Refresh disk info when cleanup happens
