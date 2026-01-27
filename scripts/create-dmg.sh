@@ -109,6 +109,12 @@ else
     cp "${SYSTEM_ICON}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 fi
 
+# Ad-hoc code sign the app bundle
+# This allows "Open Anyway" in System Settings instead of "damaged app" error
+echo "🔏 Ad-hoc signing app bundle..."
+codesign --force --deep --sign - "${APP_BUNDLE}"
+echo "✅ App signed successfully"
+
 # Prepare DMG staging area
 echo "📀 Preparing DMG..."
 cp -R "${APP_BUNDLE}" "${DMG_STAGE}/"
