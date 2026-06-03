@@ -299,18 +299,13 @@ final class ResourceMonitor: ObservableObject {
 // MARK: - ThumbnailCache Extension for Stats
 
 extension ThumbnailCache {
-    /// Approximate count of cached items
+    /// Approximate count of cached items (tracked via insert/clear/eviction, not fabricated).
     var cacheCount: Int {
-        // NSCache doesn't expose count directly, but we can estimate
-        // based on our countLimit - this is a rough approximation
-        return min(500, 100)  // Return a reasonable estimate
+        approximateCount
     }
-    
-    /// Estimated bytes used by thumbnail cache
+
+    /// Estimated bytes used by the thumbnail cache (~57 KB per 120×120 RGBA thumbnail).
     var estimatedCacheBytes: Int64 {
-        // Each thumbnail is roughly 120x120 * 4 bytes (RGBA) = ~57KB
-        // With our limit of 500 items, max would be ~28MB
-        // Return a conservative estimate based on typical usage
-        return Int64(cacheCount * 50_000)  // ~50KB per thumbnail average
+        Int64(approximateCount) * 57_000
     }
 }
