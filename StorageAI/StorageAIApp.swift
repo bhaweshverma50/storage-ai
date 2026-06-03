@@ -64,6 +64,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false // Keep app running in menu bar when window is closed
     }
+
+    // Since we keep running with no window, reopen the main window when the user clicks the
+    // Dock icon — otherwise clicking it does nothing (a confusing dead-end).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            for window in sender.windows where !window.isVisible {
+                window.makeKeyAndOrderFront(self)
+            }
+            sender.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
     
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {

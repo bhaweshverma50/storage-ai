@@ -9,7 +9,13 @@ set -e
 APP_NAME="Storage AI"
 BUNDLE_NAME="StorageAI"
 VERSION="2.12.1"
+BUILD_NUMBER="${BUILD_NUMBER:-30}"
 DMG_NAME="StorageAI-${VERSION}"
+SOURCE_PLIST="$(pwd)/StorageAI/Info.plist"
+ENTITLEMENTS="$(pwd)/StorageAI/StorageAI.entitlements"
+# Signing identity: "-" = ad-hoc (local builds). For a distributable build, export
+# CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)".
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"
 DIST_DIR="$(pwd)/dist"
@@ -35,63 +41,18 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 # Copy executable
 cp "${BUILD_DIR}/${BUNDLE_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BUNDLE_NAME}"
 
-# Create Info.plist
-cat > "${APP_BUNDLE}/Contents/Info.plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>Storage AI</string>
-    <key>CFBundleDisplayName</key>
-    <string>Storage AI</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.storageai.app</string>
-    <key>CFBundleVersion</key>
-    <string>4</string>
-    <key>CFBundleShortVersionString</key>
-    <string>2.12.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>StorageAI</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsLocalNetworking</key>
-        <true/>
-        <key>NSExceptionDomains</key>
-        <dict>
-            <key>localhost</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <true/>
-            </dict>
-            <key>127.0.0.1</key>
-            <dict>
-                <key>NSExceptionAllowsInsecureHTTPLoads</key>
-                <true/>
-                <key>NSIncludesSubdomains</key>
-                <true/>
-            </dict>
-        </dict>
-    </dict>
-    <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Storage AI. All rights reserved.</string>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.utilities</string>
-</dict>
-</plist>
-PLIST
+# Build Info.plist from the single source of truth (StorageAI/Info.plist) rather than a
+# divergent inline copy, then stamp version/build and ensure the keys the bundle needs.
+echo "📝 Generating Info.plist from source (v${VERSION} build ${BUILD_NUMBER})..."
+PB=/usr/libexec/PlistBuddy
+PLIST="${APP_BUNDLE}/Contents/Info.plist"
+cp "${SOURCE_PLIST}" "${PLIST}"
+"${PB}" -c "Set :CFBundleShortVersionString ${VERSION}" "${PLIST}"
+"${PB}" -c "Set :CFBundleVersion ${BUILD_NUMBER}" "${PLIST}" 2>/dev/null || "${PB}" -c "Add :CFBundleVersion string ${BUILD_NUMBER}" "${PLIST}"
+"${PB}" -c "Set :LSMinimumSystemVersion 14.0" "${PLIST}" 2>/dev/null || "${PB}" -c "Add :LSMinimumSystemVersion string 14.0" "${PLIST}"
+"${PB}" -c "Add :CFBundleIconFile string AppIcon" "${PLIST}" 2>/dev/null || "${PB}" -c "Set :CFBundleIconFile AppIcon" "${PLIST}"
+"${PB}" -c "Add :NSPrincipalClass string NSApplication" "${PLIST}" 2>/dev/null || true
+"${PB}" -c "Add :CFBundleDisplayName string Storage AI" "${PLIST}" 2>/dev/null || true
 
 # Create PkgInfo
 echo -n "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
@@ -109,11 +70,20 @@ else
     cp "${SYSTEM_ICON}" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
 fi
 
-# Ad-hoc code sign the app bundle
-# This allows "Open Anyway" in System Settings instead of "damaged app" error
-echo "🔏 Ad-hoc signing app bundle..."
-codesign --force --deep --sign - "${APP_BUNDLE}"
-echo "✅ App signed successfully"
+# Code sign inside-out (executable, then bundle). With a real Developer ID we also enable
+# the Hardened Runtime + entitlements + a secure timestamp so the build can be notarized.
+# Without one we fall back to ad-hoc signing for local use only.
+if [ "${CODESIGN_IDENTITY}" = "-" ]; then
+    echo "🔏 Ad-hoc signing (local build only — set CODESIGN_IDENTITY for a distributable, notarizable build)..."
+    codesign --force --sign - "${APP_BUNDLE}/Contents/MacOS/${BUNDLE_NAME}"
+    codesign --force --sign - "${APP_BUNDLE}"
+else
+    echo "🔏 Signing with '${CODESIGN_IDENTITY}' + Hardened Runtime..."
+    codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS}" --sign "${CODESIGN_IDENTITY}" "${APP_BUNDLE}/Contents/MacOS/${BUNDLE_NAME}"
+    codesign --force --options runtime --timestamp --entitlements "${ENTITLEMENTS}" --sign "${CODESIGN_IDENTITY}" "${APP_BUNDLE}"
+fi
+codesign --verify --strict --verbose=2 "${APP_BUNDLE}" || echo "⚠️  codesign verification reported issues"
+echo "✅ App signed"
 
 # Prepare DMG staging area
 echo "📀 Preparing DMG..."
@@ -268,6 +238,18 @@ fi
 echo "📦 Compressing DMG..."
 hdiutil convert "${TEMP_DMG}" -format UDZO -imagekey zlib-level=9 -o "${FINAL_DMG}"
 rm -f "${TEMP_DMG}"
+
+# Optional notarization + stapling (recommended for distribution). Requires a real
+# Developer ID signature and a stored notarytool keychain profile:
+#   xcrun notarytool store-credentials "StorageAI-Notary" --apple-id ... --team-id ... --password ...
+#   NOTARIZE=1 NOTARY_PROFILE="StorageAI-Notary" CODESIGN_IDENTITY="Developer ID Application: ..." ./scripts/create-dmg.sh
+if [ "${NOTARIZE:-0}" = "1" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+    echo "📤 Submitting to Apple notary service..."
+    xcrun notarytool submit "${FINAL_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
+    echo "📎 Stapling notarization ticket..."
+    xcrun stapler staple "${FINAL_DMG}"
+    xcrun stapler validate "${FINAL_DMG}" || echo "⚠️  stapler validation reported issues"
+fi
 
 # Clean up
 rm -rf "${DMG_STAGE}"

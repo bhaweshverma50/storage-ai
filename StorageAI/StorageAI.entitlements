@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Storage AI is intentionally NOT App-Sandboxed: it analyzes and cleans files across the
+      whole disk, which the sandbox forbids (it relies on user-granted Full Disk Access instead).
+      These entitlements enable the Hardened Runtime with only the exceptions this app needs:
+      an outbound network client for the local Ollama LLM. No JIT, no unsigned executable memory,
+      no library-validation disabling.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>
