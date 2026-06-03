@@ -6,34 +6,37 @@ actor ScanDataStore {
     static let shared = ScanDataStore()
     
     private let fileManager = FileManager.default
-    private var cacheDirectory: URL {
-        let paths = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
+
+    // These are pure path computations (no mutable actor state), so they're nonisolated and
+    // safe to use from the synchronous init and any context.
+    private nonisolated var cacheDirectory: URL {
+        let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
         return paths[0].appendingPathComponent("com.storageai.app", isDirectory: true)
     }
-    
-    private var scanDataURL: URL {
+
+    private nonisolated var scanDataURL: URL {
         cacheDirectory.appendingPathComponent("scan_data.json")
     }
-    
-    private var metadataURL: URL {
+
+    private nonisolated var metadataURL: URL {
         cacheDirectory.appendingPathComponent("metadata.json")
     }
-    
-    private var appsDataURL: URL {
+
+    private nonisolated var appsDataURL: URL {
         cacheDirectory.appendingPathComponent("apps_data.json")
     }
-    
-    private var performanceHistoryURL: URL {
+
+    private nonisolated var performanceHistoryURL: URL {
         cacheDirectory.appendingPathComponent("performance_history.json")
     }
-    
-    private var mediaAnalysisURL: URL {
+
+    private nonisolated var mediaAnalysisURL: URL {
         cacheDirectory.appendingPathComponent("media_analysis.json")
     }
-    
+
     private init() {
         // Ensure cache directory exists
-        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
     
     // MARK: - Persistence Models
