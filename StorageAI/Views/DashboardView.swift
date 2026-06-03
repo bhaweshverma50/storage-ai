@@ -12,6 +12,9 @@ struct DashboardView: View {
     @State private var aiRecommendations: [String] = []
     @State private var isLoadingAI = false
     @State private var aiUsedFallback = false  // true when AI was unavailable and we showed rule-based tips
+    // Owned here (not in ExplorerView) so the treemap survives tab switches and builds only once —
+    // otherwise revisiting the Explorer tab would recreate the view model and rebuild every time.
+    @StateObject private var explorerVM = ExplorerViewModel()
     
     enum NavigationItem: String, CaseIterable, Identifiable {
         case overview = "Overview"
@@ -188,7 +191,7 @@ struct DashboardView: View {
             case .categories:
                 CategoryDetailView()
             case .explorer:
-                ExplorerView()
+                ExplorerView(vm: explorerVM)
                     .environmentObject(appState)
             case .media:
                 MediaViewerView()

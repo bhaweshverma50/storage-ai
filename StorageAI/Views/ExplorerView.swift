@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ExplorerView: View {
     @EnvironmentObject private var appState: AppState
-    @StateObject private var vm = ExplorerViewModel()
+    @ObservedObject var vm: ExplorerViewModel    // owned by DashboardView so the tree survives tab switches
     @Environment(\.accentTheme) private var accentTheme
 
     @State private var hovered: FileNode?
