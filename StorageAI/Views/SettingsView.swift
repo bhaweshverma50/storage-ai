@@ -597,7 +597,8 @@ struct SettingsView: View {
         isTestingAI = true
         
         do {
-            let response = try await OllamaClient.generate(
+            // Round-trips to Ollama; throws if it's unreachable or the model is missing.
+            _ = try await OllamaClient.generate(
                 prompt: "Respond with exactly: AI OK",
                 maxTokens: 10
             )

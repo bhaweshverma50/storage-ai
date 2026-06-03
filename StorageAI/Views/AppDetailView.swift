@@ -72,9 +72,7 @@ struct AppDetailView: View {
     // MARK: - Stats Row
     private func statsRow(width: CGFloat) -> some View {
         let spacing: CGFloat = 12
-        // Ensure minimum card width for readability
-        let cardWidth = max((width - spacing * 3) / 4, 140)
-        
+        // Cards flex equally via maxWidth: .infinity, so no per-card width is computed here.
         return HStack(spacing: spacing) {
             StatBentoCard(
                 title: "Applications",

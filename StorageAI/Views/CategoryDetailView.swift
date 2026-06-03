@@ -298,6 +298,7 @@ struct CategoryFilesSheet: View {
                     .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
         }
     }
     

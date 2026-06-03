@@ -68,6 +68,7 @@ struct AppDetailSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
             }
             .padding(20)
             .background(.ultraThinMaterial) // Match the new aesthetic

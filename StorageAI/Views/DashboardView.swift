@@ -491,8 +491,7 @@ struct OverviewView: View {
     private func bentoGrid(width: CGFloat) -> some View {
         let spacing: CGFloat = 16
         let halfWidth = (width - spacing) / 2
-        let thirdWidth = (width - spacing * 2) / 3
-        
+
         return VStack(spacing: spacing) {
             // Row 1: Chart + Categories
             HStack(spacing: spacing) {
@@ -589,6 +588,7 @@ struct OverviewView: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(.secondary)
                                 .disabled(isLoadingAI)
+                                .accessibilityLabel(isLoadingAI ? "Refreshing recommendations" : "Refresh recommendations")
                             }
                         }
                         

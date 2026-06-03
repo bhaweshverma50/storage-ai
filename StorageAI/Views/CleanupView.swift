@@ -204,8 +204,7 @@ struct CleanupView: View {
             } else {
                 let spacing: CGFloat = 12
                 let columns = 2
-                let cardWidth = (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)
-                
+
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns),
                     spacing: spacing

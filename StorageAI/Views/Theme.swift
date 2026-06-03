@@ -208,8 +208,21 @@ struct DonutChart: View {
             .position(center)
         }
         .aspectRatio(1, contentMode: .fit)
+        // The chart conveys categories by color only; expose a text breakdown so VoiceOver and
+        // color-blind users get the same information.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Storage distribution")
+        .accessibilityValue(accessibilityBreakdown)
     }
-    
+
+    private var accessibilityBreakdown: String {
+        guard total > 0 else { return "No data" }
+        return segments
+            .filter { $0.value > 0 }
+            .map { "\($0.label) \(Int(($0.value / total) * 100)) percent" }
+            .joined(separator: ", ")
+    }
+
     private func startAngle(for index: Int) -> Angle {
         let precedingTotal = segments.prefix(index).map(\.value).reduce(0, +)
         return .degrees(360 * precedingTotal / max(total, 1) - 90)
