@@ -15,6 +15,8 @@ final class ScanService: ObservableObject {
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
     @Published private(set) var lastError: String?
+    /// Non-fatal advisory shown when a scan likely under-reported due to missing Full Disk Access.
+    @Published private(set) var accessWarning: String?
     @Published private(set) var lastScanDate: Date?
     @Published private(set) var hasLoadedCache = false
     @Published private(set) var isLoadingCache = true
@@ -180,6 +182,7 @@ final class ScanService: ObservableObject {
         // Set scanning state IMMEDIATELY
         isScanning = true
         lastError = nil
+        accessWarning = nil
         scanStartTime = Date()
         
         // Reset pause tracking
@@ -336,7 +339,14 @@ final class ScanService: ObservableObject {
                     self.fileCounts = scanResult.fileCounts
                     self.lastScanDate = Date()
                     self.scanState = .complete  // Mark as complete scan
-                    
+
+                    // Without Full Disk Access the enumerator silently yields nothing for
+                    // protected areas, so surface an actionable advisory instead of just
+                    // showing an inexplicably small total.
+                    if !PermissionsChecker.hasFullDiskAccess() {
+                        self.accessWarning = "Full Disk Access isn't granted, so some files may be missing from this scan. Grant it in System Settings ▸ Privacy & Security ▸ Full Disk Access for complete results."
+                    }
+
                     // Calculate final elapsed time
                     let finalElapsed = self.getEffectiveElapsedTime()
                     

@@ -193,20 +193,9 @@ actor MediaCompressionService {
         // Handle original file
         var finalURL = outputURL
         if !keepOriginal {
-            // Replace original
-            let backupURL = item.url.appendingPathExtension("backup")
-            try FileManager.default.moveItem(at: item.url, to: backupURL)
-            
-            // Rename compressed to original name
-            let originalExtURL = item.url.deletingPathExtension().appendingPathExtension("jpg")
-            try FileManager.default.moveItem(at: outputURL, to: originalExtURL)
-            
-            // Remove backup
-            try FileManager.default.removeItem(at: backupURL)
-            
-            finalURL = originalExtURL
+            finalURL = try replaceOriginal(item.url, with: outputURL, compressedExtension: "jpg", compressedSize: compressedSize)
         }
-        
+
         return CompressedItemResult(
             originalURL: item.url,
             compressedURL: finalURL,
@@ -215,7 +204,36 @@ actor MediaCompressionService {
             mediaType: item.type
         )
     }
-    
+
+    /// Safely replace `original` with the freshly written `compressed` output.
+    /// We verify the output first, move the original aside (restoring it if the swap fails),
+    /// and move the original to the Trash on success rather than permanently deleting it.
+    private func replaceOriginal(_ original: URL, with compressed: URL, compressedExtension: String, compressedSize: Int64) throws -> URL {
+        // Never destroy the only copy for a zero-byte / failed output.
+        guard compressedSize > 0 else { throw CompressionError.compressionFailed }
+
+        let fm = FileManager.default
+        let finalDest = original.deletingPathExtension().appendingPathExtension(compressedExtension)
+        let backupURL = original.appendingPathExtension("backup")
+        // Clear any stale backup from a previous interrupted run.
+        try? fm.removeItem(at: backupURL)
+
+        // Move the original aside (recoverable point).
+        try fm.moveItem(at: original, to: backupURL)
+        do {
+            try fm.moveItem(at: compressed, to: finalDest)
+        } catch {
+            // Swap failed — restore the original so we never strand the user's only copy.
+            try? fm.moveItem(at: backupURL, to: original)
+            throw error
+        }
+        // Success: move the original (backup) to the Trash so it stays recoverable.
+        if (try? fm.trashItem(at: backupURL, resultingItemURL: nil)) == nil {
+            // If trashing fails, leave the .backup in place rather than permanently deleting it.
+        }
+        return finalDest
+    }
+
     // MARK: - Video Compression
     
     /// Compress a single video
@@ -253,15 +271,7 @@ actor MediaCompressionService {
         // Handle original file
         var finalURL = outputURL
         if !keepOriginal {
-            let backupURL = item.url.appendingPathExtension("backup")
-            try FileManager.default.moveItem(at: item.url, to: backupURL)
-            
-            let originalExtURL = item.url.deletingPathExtension().appendingPathExtension("mp4")
-            try FileManager.default.moveItem(at: outputURL, to: originalExtURL)
-            
-            try FileManager.default.removeItem(at: backupURL)
-            
-            finalURL = originalExtURL
+            finalURL = try replaceOriginal(item.url, with: outputURL, compressedExtension: "mp4", compressedSize: compressedSize)
         }
         
         return CompressedItemResult(

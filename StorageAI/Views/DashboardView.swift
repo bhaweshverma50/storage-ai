@@ -413,6 +413,11 @@ struct OverviewView: View {
                     if let error = appState.scanService.lastError {
                         errorBanner(error)
                     }
+
+                    // Access advisory (non-fatal): scan likely under-reported without Full Disk Access
+                    if let warning = appState.scanService.accessWarning {
+                        accessWarningBanner(warning)
+                    }
                     
                     // Bento Grid
                     bentoGrid(width: geometry.size.width - 48)
@@ -484,6 +489,27 @@ struct OverviewView: View {
         .foregroundStyle(.red)
         .padding(12)
         .background(Color.red.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func accessWarningBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lock.shield")
+            Text(message)
+            Spacer()
+            Button("Open Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.plain)
+            .foregroundStyle(.orange)
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(12)
+        .background(Color.orange.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
     
