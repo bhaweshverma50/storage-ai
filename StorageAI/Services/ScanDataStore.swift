@@ -140,16 +140,16 @@ actor ScanDataStore {
             scanState: scanState
         )
         
-        // Write to disk
+        // Write to disk. This is a machine-only cache, so skip pretty-printing (smaller/faster)
+        // and write atomically so a crash mid-write can't leave a torn, undecodable file.
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        
+
         let scanDataJSON = try encoder.encode(scanData)
-        try scanDataJSON.write(to: scanDataURL)
-        
+        try scanDataJSON.write(to: scanDataURL, options: .atomic)
+
         let metadataJSON = try encoder.encode(metadata)
-        try metadataJSON.write(to: metadataURL)
+        try metadataJSON.write(to: metadataURL, options: .atomic)
     }
     
     // MARK: - Load
@@ -162,12 +162,19 @@ actor ScanDataStore {
         
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        
-        let scanDataJSON = try Data(contentsOf: scanDataURL)
-        let scanData = try decoder.decode(PersistedScanData.self, from: scanDataJSON)
-        
-        let metadataJSON = try Data(contentsOf: metadataURL)
-        let metadata = try decoder.decode(ScanMetadata.self, from: metadataJSON)
+
+        let scanData: PersistedScanData
+        let metadata: ScanMetadata
+        do {
+            scanData = try decoder.decode(PersistedScanData.self, from: Data(contentsOf: scanDataURL))
+            metadata = try decoder.decode(ScanMetadata.self, from: Data(contentsOf: metadataURL))
+        } catch {
+            // Cache is corrupt or from an incompatible schema (e.g. after an app update). Clear it
+            // and fall back to a fresh scan instead of repeatedly failing to load.
+            try? fileManager.removeItem(at: scanDataURL)
+            try? fileManager.removeItem(at: metadataURL)
+            return nil
+        }
         
         // Convert back to app models and extract file counts
         var fileCounts: [StorageCategory: Int] = [:]

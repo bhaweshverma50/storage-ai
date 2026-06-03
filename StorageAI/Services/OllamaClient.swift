@@ -284,10 +284,19 @@ enum OllamaClient {
         }
         
         var buffer = Data()
-        
+        // Each pull-progress JSON line is tiny; cap the line buffer so a malicious or broken
+        // server can't stream gigabytes without a newline and exhaust memory.
+        let maxLineBytes = 64 * 1024
+
         for try await byte in bytes {
+            // Cooperative cancellation: stop streaming if the surrounding task is cancelled.
+            if Task.isCancelled { throw CancellationError() }
+
             buffer.append(byte)
-            
+            if buffer.count > maxLineBytes {
+                throw OllamaError.invalidResponse
+            }
+
             // Check for newline (each JSON object is on its own line)
             if byte == UInt8(ascii: "\n") {
                 if let line = String(data: buffer, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
