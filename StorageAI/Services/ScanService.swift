@@ -431,18 +431,20 @@ final class ScanService: ObservableObject {
     func saveCurrentProgress() {
         let summaryToSave = self.summary
         let filesToSave = self.filesByCategory
+        let countsToSave = self.fileCounts
         let progressToSave = self.progress
         let scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
         let currentScanState = self.scanState
-        
+
         // Update last scan date for partial saves too
         self.lastScanDate = Date()
-        
+
         Task.detached(priority: .background) {
             do {
                 try await ScanDataStore.shared.save(
                     summary: summaryToSave,
                     filesByCategory: filesToSave,
+                    fileCounts: countsToSave,
                     progress: progressToSave,
                     scanDuration: scanDuration,
                     scanState: currentScanState

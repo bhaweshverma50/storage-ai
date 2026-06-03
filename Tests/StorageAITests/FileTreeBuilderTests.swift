@@ -13,56 +13,60 @@ final class FileTreeBuilderTests: XCTestCase {
         return root
     }
 
-    func testBuildsAggregatedTree() async throws {
+    func testIndexSizesAggregatesFolderTotals() async throws {
         let root = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: root) }
-        let node = await FileTreeBuilder.build(root: root, token: CancellationToken(), progress: { _ in })
-        XCTAssertNotNil(node)
-        // totalFileAllocatedSize rounds each file up to the APFS block size (4 KB),
-        // so the aggregate runs higher than the logical byte counts; widen tolerance.
-        XCTAssertEqual(Double(node!.sizeBytes), 800_020, accuracy: 20_000)  // 500000+300000+20
-        let sub = node!.children?.first { $0.name == "sub" }
-        XCTAssertEqual(Double(sub?.sizeBytes ?? 0), 300_000, accuracy: 8_000)
+        let index = await FileTreeBuilder.indexSizes(roots: [root], token: CancellationToken(), progress: { _ in })
+        XCTAssertNotNil(index)
+        // totalFileAllocatedSize rounds up to APFS block size, so widen tolerance.
+        XCTAssertEqual(Double(index!.size(of: root)), 800_020, accuracy: 20_000)   // 500000+300000+20
+        XCTAssertEqual(Double(index!.size(of: root.appendingPathComponent("sub"))), 300_000, accuracy: 8_000)
     }
 
-    func testTailCollapsesSmallFilesIntoAggregate() async throws {
+    func testLevelChildrenTailCollapsesAndSizesSubfoldersFromIndex() async throws {
         let root = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: root) }
-        let node = await FileTreeBuilder.build(root: root, token: CancellationToken(), progress: { _ in })
-        let names = Set(node!.children?.map(\.name) ?? [])
-        XCTAssertFalse(names.contains("tiny1.txt"))
-        XCTAssertTrue(node!.children?.contains { $0.name.contains("small item") } ?? false)
-        XCTAssertTrue(names.contains("big.bin"))
+        let index = await FileTreeBuilder.indexSizes(roots: [root], token: CancellationToken(), progress: { _ in })!
+        let level = FileTreeBuilder.levelChildren(of: root, index: index)
+        let names = Set(level.map(\.name))
+        XCTAssertTrue(names.contains("big.bin"))                                  // significant file kept
+        XCTAssertFalse(names.contains("tiny1.txt"))                              // tail folded
+        XCTAssertTrue(level.contains { $0.name.contains("small item") })         // aggregate present
+        // subfolder node is sized from the index, not re-walked
+        let sub = level.first { $0.name == "sub" }
+        XCTAssertNotNil(sub)
+        XCTAssertEqual(sub!.sizeBytes, index.size(of: root.appendingPathComponent("sub")))
+        // returned largest-first
+        XCTAssertEqual(level.map(\.sizeBytes), level.map(\.sizeBytes).sorted(by: >))
     }
 
-    func testCancellationReturnsNil() async throws {
+    func testCancellationReturnsNilIndex() async throws {
         let root = try makeTempTree()
         defer { try? FileManager.default.removeItem(at: root) }
         let token = CancellationToken(); token.cancel()
-        let node = await FileTreeBuilder.build(root: root, token: token, progress: { _ in })
-        XCTAssertNil(node)
+        let index = await FileTreeBuilder.indexSizes(roots: [root], token: token, progress: { _ in })
+        XCTAssertNil(index)
     }
 
-    func testBuildAllWrapsMultipleRootsAndAggregates() async throws {
-        let r1 = try makeTempTree()
-        let r2 = try makeTempTree()
-        defer { try? FileManager.default.removeItem(at: r1); try? FileManager.default.removeItem(at: r2) }
-        let node = await FileTreeBuilder.buildAll(roots: [r1, r2], token: CancellationToken(), progress: { _ in })
-        XCTAssertNotNil(node)
-        XCTAssertEqual(node?.children?.count, 2)                 // one child per root
-        // Synthetic root aggregates both roots (~2 x ~800 KB), allowing for block rounding.
-        XCTAssertEqual(Double(node!.sizeBytes), 1_600_040, accuracy: 40_000)
-    }
-
-    func testSymlinksAreSkipped() async throws {
+    func testSymlinksAreNotCounted() async throws {
         let fm = FileManager.default
         let root = try makeTempTree()
         defer { try? fm.removeItem(at: root) }
-        // A symlink pointing back at a sibling must NOT be followed (cycle / double-count guard).
         try fm.createSymbolicLink(at: root.appendingPathComponent("link.bin"),
                                   withDestinationURL: root.appendingPathComponent("big.bin"))
-        let node = await FileTreeBuilder.build(root: root, token: CancellationToken(), progress: { _ in })
-        let names = node!.children?.map(\.name) ?? []
-        XCTAssertFalse(names.contains("link.bin"))               // symlink excluded
+        let index = await FileTreeBuilder.indexSizes(roots: [root], token: CancellationToken(), progress: { _ in })!
+        // big.bin counted once; symlink not added on top.
+        XCTAssertEqual(Double(index.size(of: root)), 800_020, accuracy: 20_000)
+        let names = Set(FileTreeBuilder.levelChildren(of: root, index: index).map(\.name))
+        XCTAssertFalse(names.contains("link.bin"))
+    }
+
+    func testMultipleRootsIndexedIndependently() async throws {
+        let r1 = try makeTempTree()
+        let r2 = try makeTempTree()
+        defer { try? FileManager.default.removeItem(at: r1); try? FileManager.default.removeItem(at: r2) }
+        let index = await FileTreeBuilder.indexSizes(roots: [r1, r2], token: CancellationToken(), progress: { _ in })!
+        XCTAssertEqual(Double(index.size(of: r1)), 800_020, accuracy: 20_000)
+        XCTAssertEqual(Double(index.size(of: r2)), 800_020, accuracy: 20_000)
     }
 }

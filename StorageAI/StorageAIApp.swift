@@ -94,6 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let summary = scanService.summary
         let files = scanService.filesByCategory
+        let counts = scanService.fileCounts
         let progress = scanService.progress
         let state = scanService.scanState
         let duration = progress.elapsedSeconds
@@ -103,6 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? await ScanDataStore.shared.save(
                 summary: summary,
                 filesByCategory: files,
+                fileCounts: counts,
                 progress: progress,
                 scanDuration: duration,
                 scanState: state

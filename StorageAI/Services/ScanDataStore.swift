@@ -96,16 +96,19 @@ actor ScanDataStore {
     func save(
         summary: StorageSummary,
         filesByCategory: [StorageCategory: [FileEntry]],
+        fileCounts: [StorageCategory: Int] = [:],
         progress: ScanProgress,
         scanDuration: TimeInterval,
         scanState: ScanState = .complete
     ) async throws {
-        // Convert to persisted format
+        // Persist the REAL per-category file count (tracked live during the scan), not just the
+        // top-N file list's count — the list is empty until a scan completes, so deriving the
+        // count from it made interrupted scans persist 0 files per category.
         let buckets = summary.buckets.map { bucket in
             PersistedScanData.PersistedBucket(
                 category: bucket.category.rawValue,
                 bytes: bucket.bytes,
-                fileCount: filesByCategory[bucket.category]?.count ?? 0
+                fileCount: fileCounts[bucket.category] ?? filesByCategory[bucket.category]?.count ?? 0
             )
         }
         

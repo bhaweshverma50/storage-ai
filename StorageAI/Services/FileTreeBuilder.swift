@@ -1,102 +1,122 @@
 import Foundation
 
+/// Lazy treemap data source. One walk computes every folder's total size into a compact index
+/// (no file/tree retention → bounded memory); the view then materializes ONE level at a time on
+/// demand, taking subfolder sizes from the index (instant) and file sizes from a fresh listing.
 enum FileTreeBuilder {
     struct Progress { let filesScanned: Int; let currentPath: String }
 
-    /// Beyond this depth a folder collapses into a single sized tile (no children) — keeps deep
-    /// trees (node_modules, site-packages) from exploding node count/memory.
-    private static let maxDepth = 10
+    /// Only SIGNIFICANT folders are cached. A dev disk can have millions of folders
+    /// (node_modules nesting), so caching every one is itself gigabytes — we cache folders
+    /// >= `cacheFloor` and size the (small) rest on demand via `quickSize`, which is cheap
+    /// precisely because they're small.
+    private static let cacheFloor: Int64 = 8_000_000   // 8 MB
 
-    /// Build an aggregated tree for `root` (runs off the caller's thread via a detached task).
-    /// Files below an adaptive per-folder threshold are aggregated WITHOUT allocating a node each
-    /// (the long tail of tiny files is what would otherwise blow up memory on a full-disk build).
-    static func build(root: URL,
-                      token: CancellationToken,
-                      progress: @escaping (Progress) -> Void) async -> FileNode? {
-        await Task.detached(priority: .utility) {
-            var counter = 0
-            return buildSync(url: root, depth: 0, token: token, counter: &counter, progress: progress)
-        }.value
+    /// Significant folder path (standardized) → total allocated bytes. Bounded to thousands of
+    /// entries (only big folders), so it stays a few MB even for a whole disk.
+    final class SizeIndex: @unchecked Sendable {
+        var sizes: [String: Int64] = [:]
+        /// Cached size if significant; otherwise compute it on demand (the folder is small → fast).
+        func size(of url: URL) -> Int64 {
+            if let cached = sizes[url.standardizedFileURL.path] { return cached }
+            return FileTreeBuilder.quickSize(url)
+        }
     }
 
-    /// Build a synthetic root containing several top-level roots (whole-disk view).
-    static func buildAll(roots: [URL],
-                         token: CancellationToken,
-                         progress: @escaping (Progress) -> Void) async -> FileNode? {
+    private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey, .isSymbolicLinkKey]
+
+    // MARK: - One-time size walk
+
+    /// Walk `roots` once and record every folder's total size. Off-thread, cancellable. Retains
+    /// only the size index — no per-file nodes, no tree.
+    static func indexSizes(roots: [URL],
+                           token: CancellationToken,
+                           progress: @escaping (Progress) -> Void) async -> SizeIndex? {
         await Task.detached(priority: .utility) {
+            let index = SizeIndex()
             var counter = 0
-            var children: [FileNode] = []
-            for r in roots {
+            for root in roots {
                 if token.isCancelled { return nil }
-                if let n = buildSync(url: r, depth: 1, token: token, counter: &counter, progress: progress) {
-                    children.append(n)
-                }
+                _ = sumFolder(root, index: index, token: token, counter: &counter, progress: progress)
             }
-            guard !token.isCancelled, !children.isEmpty else { return nil }
-            let root = FileNode(name: "All Locations", url: URL(fileURLWithPath: "/"), isDirectory: true, children: children)
-            root.isSynthetic = true
-            return root
+            return token.isCancelled ? nil : index
         }.value
     }
 
-    private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .totalFileAllocatedSizeKey, .isSymbolicLinkKey]
-
-    private static func buildSync(url: URL, depth: Int, token: CancellationToken,
-                                  counter: inout Int,
-                                  progress: @escaping (Progress) -> Void) -> FileNode? {
-        if token.isCancelled { return nil }
-        let values = try? url.resourceValues(forKeys: keys)
-        if values?.isSymbolicLink == true { return nil } // don't follow symlinks (cycles / double count)
-
-        guard values?.isDirectory == true else {
-            let size = Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
-            return FileNode(name: url.lastPathComponent, url: url, sizeBytes: size, isDirectory: false)
-        }
-
-        // Depth cap: collapse this (deep) folder into one sized tile without building children.
-        if depth >= maxDepth {
-            return FileNode(name: url.lastPathComponent, url: url, sizeBytes: quickSize(url, token: token), isDirectory: true)
-        }
-
+    @discardableResult
+    private static func sumFolder(_ url: URL, index: SizeIndex, token: CancellationToken,
+                                  counter: inout Int, progress: @escaping (Progress) -> Void) -> Int64 {
+        if token.isCancelled { return 0 }
         guard let entries = try? FileManager.default.contentsOfDirectory(
                 at: url, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else {
-            return FileNode(name: url.lastPathComponent, url: url, sizeBytes: 0, isDirectory: true)
+            index.sizes[url.standardizedFileURL.path] = 0
+            return 0
         }
-
-        var folderNodes: [FileNode] = []
-        var files: [(name: String, url: URL, size: Int64)] = []
+        var total: Int64 = 0
         for child in entries {
-            if token.isCancelled { return nil }
-            let cv = try? child.resourceValues(forKeys: keys)
-            if cv?.isSymbolicLink == true { continue }
-            if cv?.isDirectory == true {
-                if let n = buildSync(url: child, depth: depth + 1, token: token, counter: &counter, progress: progress) {
-                    folderNodes.append(n)
-                }
+            if token.isCancelled { return total }
+            let v = try? child.resourceValues(forKeys: keys)
+            if v?.isSymbolicLink == true { continue }   // don't follow symlinks (cycles / double count)
+            if v?.isDirectory == true {
+                total += sumFolder(child, index: index, token: token, counter: &counter, progress: progress)
             } else {
                 counter += 1
                 if counter % 4000 == 0 { progress(Progress(filesScanned: counter, currentPath: child.path)) }
-                files.append((child.lastPathComponent, child, Int64(cv?.totalFileAllocatedSize ?? cv?.fileSize ?? 0)))
+                total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
+            }
+        }
+        // Only cache SIGNIFICANT folders; small ones are sized on demand (cheap) to keep the
+        // index a few MB instead of gigabytes on a disk with millions of folders.
+        if total >= cacheFloor { index.sizes[url.standardizedFileURL.path] = total }
+        return total
+    }
+
+    /// Node-free subtree size (used to size small, uncached folders on demand — fast since small).
+    static func quickSize(_ url: URL) -> Int64 {
+        guard let en = FileManager.default.enumerator(at: url, includingPropertiesForKeys: Array(keys),
+                                                      options: [.skipsHiddenFiles], errorHandler: { _, _ in true }) else { return 0 }
+        var total: Int64 = 0
+        for case let f as URL in en {
+            let v = try? f.resourceValues(forKeys: keys)
+            if v?.isDirectory == true || v?.isSymbolicLink == true { continue }
+            total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    // MARK: - Per-level materialization
+
+    /// Build ONE level: the immediate children of `folderURL` as view nodes. Subfolder sizes come
+    /// from `index` (instant); file sizes from this single directory read. Small files AND small
+    /// subfolders fold into one "N small items" tile (the threshold scales per level). Returns
+    /// nodes sorted largest-first. Cheap — no subtree walk — so it's safe to call on each drill.
+    static func levelChildren(of folderURL: URL, index: SizeIndex) -> [FileNode] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: folderURL, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return [] }
+
+        var folders: [FileNode] = []
+        var files: [(name: String, url: URL, size: Int64)] = []
+        for child in entries {
+            let v = try? child.resourceValues(forKeys: keys)
+            if v?.isSymbolicLink == true { continue }
+            if v?.isDirectory == true {
+                folders.append(FileNode(name: child.lastPathComponent, url: child,
+                                        sizeBytes: index.size(of: child), isDirectory: true))
+            } else {
+                files.append((child.lastPathComponent, child, Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)))
             }
         }
 
-        // Adaptive threshold from the folder total. BOTH small files and small subfolders fold
-        // into one "N small items" tile — folding folders (discarding their already-collapsed
-        // subtree) is what bounds the retained tree on a full-disk build. The threshold scales
-        // per level, so granularity increases as you drill into a folder.
-        let total = folderNodes.reduce(0) { $0 + $1.sizeBytes } + files.reduce(0) { $0 + $1.size }
+        let total = folders.reduce(0) { $0 + $1.sizeBytes } + files.reduce(0) { $0 + $1.size }
         let threshold = max(Int64(64_000), Int64(Double(total) * 0.002))
         var kept: [FileNode] = []
         var tailBytes: Int64 = 0
         var tailCount = 0
         var lone: FileNode?
 
-        for fn in folderNodes {
-            if fn.sizeBytes >= threshold {
-                kept.append(fn)
-            } else {
-                tailBytes += fn.sizeBytes; tailCount += 1; lone = fn   // node discarded unless it's the only tail item
-            }
+        for fn in folders {
+            if fn.sizeBytes >= threshold { kept.append(fn) }
+            else { tailBytes += fn.sizeBytes; tailCount += 1; lone = fn }
         }
         for f in files {
             if f.size >= threshold {
@@ -106,32 +126,14 @@ enum FileTreeBuilder {
                 lone = FileNode(name: f.name, url: f.url, sizeBytes: f.size, isDirectory: false)
             }
         }
-
         if tailCount == 1, let lone {
-            kept.append(lone)                       // a single small item isn't worth aggregating
+            kept.append(lone)
         } else if tailCount > 1 {
-            let agg = FileNode(name: "\(tailCount) small items", url: url, sizeBytes: tailBytes, isDirectory: false)
-            agg.isSynthetic = true                  // aggregate of many items; not a single deletable thing
+            let agg = FileNode(name: "\(tailCount) small items", url: folderURL, sizeBytes: tailBytes, isDirectory: false)
+            agg.isSynthetic = true
             kept.append(agg)
         }
 
-        return FileNode(name: url.lastPathComponent, url: url, isDirectory: true, children: kept)
-    }
-
-    /// Sum the allocated size of a subtree without building nodes (used past the depth cap).
-    private static func quickSize(_ url: URL, token: CancellationToken) -> Int64 {
-        let sizeKeys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey]
-        guard let en = FileManager.default.enumerator(at: url, includingPropertiesForKeys: sizeKeys,
-                                                      options: [.skipsHiddenFiles], errorHandler: { _, _ in true }) else { return 0 }
-        var total: Int64 = 0
-        var i = 0
-        for case let f as URL in en {
-            i += 1
-            if i % 4096 == 0 && token.isCancelled { break }
-            let v = try? f.resourceValues(forKeys: Set(sizeKeys))
-            guard v?.isRegularFile == true else { continue }
-            total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
-        }
-        return total
+        return kept.sorted { $0.sizeBytes > $1.sizeBytes }
     }
 }

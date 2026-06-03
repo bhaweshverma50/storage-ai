@@ -24,7 +24,9 @@ final class FileNode: @unchecked Sendable {
         self.url = url
         self.isDirectory = isDirectory
         self.sizeBytes = sizeBytes
-        self.children = isDirectory ? [] : nil
+        // nil = "not yet loaded" for folders (lazy per-level loading); files are always nil.
+        // (Previously folders defaulted to [], which made childrenLoaded==true and skipped loading.)
+        self.children = nil
         self.kind = isDirectory ? .folder : FileKind.forExtension(url.pathExtension)
     }
 
@@ -34,6 +36,17 @@ final class FileNode: @unchecked Sendable {
         self.children = children
         for c in children { c.parent = self }
         self.sizeBytes = children.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    /// Whether this folder's children have been materialized yet (lazy per-level loading).
+    var childrenLoaded: Bool { children != nil }
+
+    /// Attach lazily-loaded children for a folder. Does NOT recompute sizeBytes — a folder's size
+    /// is authoritative from the size index (the loaded children may be tail-collapsed and not sum
+    /// to it). Used by the Explorer to materialize one level at a time.
+    func setChildren(_ nodes: [FileNode]) {
+        for n in nodes { n.parent = self }
+        children = nodes
     }
 
     /// Remove a child and propagate the size delta up the ancestor chain.
