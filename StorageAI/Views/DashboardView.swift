@@ -237,12 +237,10 @@ struct DashboardView: View {
     private func loadAppData() async {
         isLoadingApps = true
         
-        let apps = await Task.detached {
-            AppAttribution.analyzeApps()
-                .sorted { $0.totalBytes > $1.totalBytes }
-                .prefix(50)
-                .map { $0 }
-        }.value
+        let apps = await AppAttribution.analyzeApps()
+            .sorted { $0.totalBytes > $1.totalBytes }
+            .prefix(50)
+            .map { $0 }
         
         // Save apps to cache
         do {
