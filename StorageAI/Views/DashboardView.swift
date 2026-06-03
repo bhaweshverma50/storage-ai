@@ -16,17 +16,19 @@ struct DashboardView: View {
     enum NavigationItem: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case categories = "Categories"
+        case explorer = "Explorer"
         case media = "Media"
         case applications = "Applications"
         case cleanup = "Cleanup"
         case settings = "Settings"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .overview: return "chart.pie"
             case .categories: return "folder"
+            case .explorer: return "square.grid.3x3.fill"
             case .media: return "photo.stack"
             case .applications: return "square.grid.2x2"
             case .cleanup: return "trash"
@@ -185,6 +187,9 @@ struct DashboardView: View {
                 .environmentObject(appState)
             case .categories:
                 CategoryDetailView()
+            case .explorer:
+                ExplorerView()
+                    .environmentObject(appState)
             case .media:
                 MediaViewerView()
             case .applications:

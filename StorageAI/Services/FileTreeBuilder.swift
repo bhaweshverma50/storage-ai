@@ -28,7 +28,9 @@ enum FileTreeBuilder {
                 }
             }
             guard !token.isCancelled, !children.isEmpty else { return nil }
-            return FileNode(name: "All Locations", url: URL(fileURLWithPath: "/"), isDirectory: true, children: children)
+            let root = FileNode(name: "All Locations", url: URL(fileURLWithPath: "/"), isDirectory: true, children: children)
+            root.isSynthetic = true
+            return root
         }.value
     }
 
@@ -79,8 +81,10 @@ enum FileTreeBuilder {
             }
         }
         if tailCount > 1 {
-            kept.append(FileNode(name: "\(tailCount) small items", url: parentURL,
-                                 sizeBytes: tailBytes, isDirectory: false))
+            let agg = FileNode(name: "\(tailCount) small items", url: parentURL,
+                               sizeBytes: tailBytes, isDirectory: false)
+            agg.isSynthetic = true   // aggregate of many files; not a single deletable item
+            kept.append(agg)
         } else if tailCount == 1, let only = kids.first(where: { !$0.isDirectory && $0.sizeBytes < threshold }) {
             kept.append(only) // a single small file isn't worth collapsing
         }

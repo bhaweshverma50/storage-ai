@@ -14,6 +14,9 @@ final class FileNode: @unchecked Sendable {
     private(set) var children: [FileNode]?
     weak var parent: FileNode?
     let kind: FileKind
+    /// True for nodes that don't map to a single real filesystem item (the "N small items"
+    /// aggregate, the "All Locations" synthetic root). Such nodes can't be revealed/trashed.
+    var isSynthetic = false
 
     // File initializer
     init(name: String, url: URL, sizeBytes: Int64, isDirectory: Bool) {
