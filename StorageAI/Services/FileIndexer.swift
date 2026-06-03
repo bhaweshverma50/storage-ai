@@ -391,30 +391,43 @@ enum FileIndexer {
 
     static func sizeOfPath(_ url: URL, includeHidden: Bool = true) -> Int64 {
         var total: Int64 = 0
-        
+
         var enumOptions: FileManager.DirectoryEnumerationOptions = []
         if !includeHidden {
             enumOptions.insert(.skipsHiddenFiles)
         }
-        
+
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+            .fileResourceIdentifierKey
+        ]
+
+        // errorHandler: keep walking past unreadable subtrees instead of aborting the whole total.
         let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .totalFileAllocatedSizeKey
-            ],
-            options: enumOptions
+            includingPropertiesForKeys: keys,
+            options: enumOptions,
+            errorHandler: { _, _ in true }
         )
 
         guard let fileEnum = enumerator else { return 0 }
+
+        // Count each physical file once: hardlinks share a fileResourceIdentifier, so without
+        // this they'd be summed multiple times and overstate reclaimable space (common in
+        // Caches/Containers). NSMutableSet uses isEqual/hash on the identifier objects.
+        let seen = NSMutableSet()
+
         for case let fileURL as URL in fileEnum {
-            let values = try? fileURL.resourceValues(forKeys: [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .totalFileAllocatedSizeKey
-            ])
+            let values = try? fileURL.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true else { continue }
+
+            if let identifier = values?.fileResourceIdentifier as? NSObject {
+                if seen.contains(identifier) { continue }
+                seen.add(identifier)
+            }
+
             total += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
         }
         return total
@@ -477,16 +490,9 @@ struct StorageClassifier {
             return .documents
         }
         
-        // 3. Media
-        if path.hasPrefix(userMovies) || 
-           path.hasPrefix(userMusic) || 
-           path.hasPrefix(userPictures) ||
-           mediaExtensions.contains(pathExtension) {
-            return .media
-        }
-        
-        // 4. System
-        if path.hasPrefix("/system") || 
+        // 3. System — checked BEFORE media so a media-extension file under a system tree
+        //    (e.g. /System/.../x.png) is classified as system, not media.
+        if path.hasPrefix("/system") ||
            path.hasPrefix("/library") ||
            path.hasPrefix("/usr") ||
            path.hasPrefix("/bin") ||
@@ -494,7 +500,15 @@ struct StorageClassifier {
            path.hasPrefix("/private/var") {
             return .system
         }
-        
+
+        // 4. Media
+        if path.hasPrefix(userMovies) ||
+           path.hasPrefix(userMusic) ||
+           path.hasPrefix(userPictures) ||
+           mediaExtensions.contains(pathExtension) {
+            return .media
+        }
+
         // 5. Library/Caches (App Data)
         if path.hasPrefix(userLibrary) || 
            path.contains("/library/caches/") ||
