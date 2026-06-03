@@ -1,6 +1,12 @@
 import Foundation
 
-final class FileNode {
+/// A node in the aggregated directory tree backing the treemap.
+///
+/// Built off-thread by `FileTreeBuilder` and then handed to the `@MainActor` view layer, which
+/// is the only place it's mutated afterward (e.g. `removeChild` on delete). That build-then-handoff
+/// ownership means it's safe to transfer across the actor boundary, which `@unchecked Sendable`
+/// asserts (the alternative, leaving it non-Sendable, breaks the handoff under strict concurrency).
+final class FileNode: @unchecked Sendable {
     let name: String
     let url: URL
     let isDirectory: Bool
@@ -26,15 +32,6 @@ final class FileNode {
         for c in children { c.parent = self }
         self.sizeBytes = children.reduce(0) { $0 + $1.sizeBytes }
     }
-
-    func addChild(_ node: FileNode) {
-        node.parent = self
-        children?.append(node)
-        sizeBytes += node.sizeBytes
-    }
-
-    /// Set size directly (used by the builder while aggregating bottom-up).
-    func setSize(_ bytes: Int64) { sizeBytes = bytes }
 
     /// Remove a child and propagate the size delta up the ancestor chain.
     func removeChild(_ node: FileNode) {
