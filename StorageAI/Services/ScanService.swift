@@ -24,6 +24,7 @@ final class ScanService: ObservableObject {
 
     private var scanTask: Task<Void, Never>?
     private var periodicSaveTask: Task<Void, Never>?
+    private var cacheLoadTask: Task<Void, Never>?
     private var cancellationToken: CancellationToken?
     private var scanStartTime: Date?
     private var lastPeriodicSaveTime: Date?
@@ -50,11 +51,17 @@ final class ScanService: ObservableObject {
         let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
         self.summary = StorageSummary(buckets: initialBuckets)
 
-        // Load cache and performance history immediately on init
-        Task { @MainActor in
+        // Load cache and performance history immediately on init. Kept as a task others can
+        // await (see awaitCacheLoad) instead of being polled.
+        cacheLoadTask = Task { @MainActor in
             await self.loadCachedData()
             await self.loadPerformanceHistory()
         }
+    }
+
+    /// Await the initial cache load that kicks off in init (used instead of polling isLoadingCache).
+    func awaitCacheLoad() async {
+        await cacheLoadTask?.value
     }
     
     // MARK: - Performance History

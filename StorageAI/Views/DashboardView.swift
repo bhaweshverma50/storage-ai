@@ -206,14 +206,10 @@ struct DashboardView: View {
     
     // MARK: - Data Loading
     private func loadInitialData() async {
-        // Wait for cache to finish loading before checking summary
-        // This fixes race condition where loadInitialData runs before ScanService.loadCachedData completes
-        var waitCount = 0
-        while appState.scanService.isLoadingCache && waitCount < 50 {
-            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
-            waitCount += 1
-        }
-        
+        // Await the cache load rather than polling isLoadingCache for up to 2.5s — this can't
+        // time out before the cache is ready, and adds no artificial latency.
+        await appState.scanService.awaitCacheLoad()
+
         // Only load app data if we have cached scan data
         // This prevents permission popups on every app launch
         guard appState.scanService.summary.totalBytes > 0 else {
