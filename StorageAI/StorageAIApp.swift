@@ -11,6 +11,7 @@ struct StorageAIApp: App {
                 .environmentObject(appState)
                 .preferredColorScheme(appState.effectiveColorScheme)
                 .tint(appState.colorTheme.accentColor)
+                .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
                 .onAppear {
                     // Connect appState to delegate for termination handling
                     appDelegate.appState = appState
@@ -44,6 +45,7 @@ struct StorageAIApp: App {
                 .environmentObject(appState)
                 .environment(\.accentTheme, appState.colorTheme.accentColor)
                 .environment(\.fontScale, appState.fontSize.scale)
+                .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
                 .preferredColorScheme(appState.effectiveColorScheme)
         } label: {
             Image(systemName: "externaldrive")

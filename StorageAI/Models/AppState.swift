@@ -37,6 +37,16 @@ enum FontSize: String, Codable, CaseIterable {
         case .large: return "115%"
         }
     }
+
+    /// Maps the setting to a system Dynamic Type size so that views using semantic fonts
+    /// (.caption/.body/...) scale even where they don't multiply by the custom fontScale.
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .small: return .small
+        case .medium: return .large   // system default
+        case .large: return .xxLarge
+        }
+    }
 }
 
 // MARK: - Color Theme
