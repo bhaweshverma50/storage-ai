@@ -401,7 +401,7 @@ struct MediaViewerView: View {
                 return
             }
         } catch {
-            print("Failed to load cached media analysis: \(error)")
+            Log.media.error("Failed to load cached media analysis: \(error.localizedDescription, privacy: .public)")
         }
         
         // No cache - don't auto-analyze, let user click the button
@@ -429,7 +429,7 @@ struct MediaViewerView: View {
         do {
             try await ScanDataStore.shared.saveMediaAnalysis(result)
         } catch {
-            print("Failed to cache media analysis: \(error)")
+            Log.media.error("Failed to cache media analysis: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -505,7 +505,7 @@ struct MediaViewerView: View {
                 appState.scanService.refreshDiskInfo()
                 
                 // Show success (could add a toast here)
-                print("Compressed \(result.successCount) files, saved \(result.formattedSavings)")
+                Log.media.info("Compressed \(result.successCount) files, saved \(result.formattedSavings, privacy: .public)")
             }
         } catch {
             await MainActor.run {
@@ -533,7 +533,7 @@ struct MediaViewerView: View {
                 try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
                 deletedCount += 1
             } catch {
-                print("Failed to delete \(item.fileName): \(error)")
+                Log.media.error("Failed to delete \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
             
             let progress = Double(index + 1) / Double(itemsToDelete.count)

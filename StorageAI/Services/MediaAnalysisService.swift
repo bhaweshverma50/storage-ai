@@ -186,7 +186,7 @@ actor MediaAnalysisService {
             do {
                 allItems = try await ScanDataStore.shared.loadIncrementalMediaItems()
             } catch {
-                print("Failed to load incremental media items: \(error)")
+                Log.media.error("Failed to load incremental media items: \(error.localizedDescription, privacy: .public)")
             }
         }
         

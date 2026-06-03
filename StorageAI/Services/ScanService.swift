@@ -157,7 +157,7 @@ final class ScanService: ObservableObject {
                 self.scanState = cached.metadata.scanState
             }
         } catch {
-            print("Failed to load cached scan data: \(error)")
+            Log.cache.error("Failed to load cached scan data: \(error.localizedDescription, privacy: .public)")
         }
 
         isLoadingCache = false
@@ -448,7 +448,7 @@ final class ScanService: ObservableObject {
                     scanState: currentScanState
                 )
             } catch {
-                print("Failed to save current progress: \(error)")
+                Log.cache.error("Failed to save current progress: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

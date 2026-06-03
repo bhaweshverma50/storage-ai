@@ -227,7 +227,7 @@ struct DashboardView: View {
                 return
             }
         } catch {
-            print("Failed to load cached apps: \(error)")
+            Log.cache.error("Failed to load cached apps: \(error.localizedDescription, privacy: .public)")
         }
         
         // If no cached apps, compute fresh
@@ -246,7 +246,7 @@ struct DashboardView: View {
         do {
             try await ScanDataStore.shared.saveApps(Array(apps))
         } catch {
-            print("Failed to save apps cache: \(error)")
+            Log.cache.error("Failed to save apps cache: \(error.localizedDescription, privacy: .public)")
         }
         
         await loadCleanupTargets()
