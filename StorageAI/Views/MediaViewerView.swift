@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MediaViewerView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @Environment(\.accentTheme) private var accentTheme
     @Environment(\.fontScale) private var fontScale
     
@@ -1027,7 +1028,9 @@ struct QualityOption: View {
 }
 
 #Preview {
-    MediaViewerView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return MediaViewerView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
         .frame(width: 1000, height: 800)
 }

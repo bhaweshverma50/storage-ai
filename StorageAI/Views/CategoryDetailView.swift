@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CategoryDetailView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @State private var selectedCategory: StorageCategory?
     
     var body: some View {
@@ -166,6 +167,7 @@ struct CategoryBentoCard: View {
 // MARK: - Category Files Sheet (Virtualization Fix)
 struct CategoryFilesSheet: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @Environment(\.dismiss) private var dismiss
     let category: StorageCategory
 

@@ -3,6 +3,7 @@ import Charts
 
 struct DashboardView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @State private var topApps: [AppEntry] = []
     @State private var cleanupTargets: [CleanupTarget] = []
     @State private var isLoadingApps = false
@@ -368,6 +369,7 @@ struct DiskProgressBar: View {
 // MARK: - Overview View (Bento Box Layout)
 struct OverviewView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @Environment(\.accentTheme) private var accentTheme
     @Environment(\.fontScale) private var fontScale
     let topApps: [AppEntry]
@@ -799,7 +801,10 @@ struct CompactAppRow: View {
 }
 
 #Preview {
-    DashboardView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return DashboardView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 1000, height: 700)
 }

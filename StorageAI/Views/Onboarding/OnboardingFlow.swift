@@ -3,6 +3,7 @@ import AppKit
 
 struct OnboardingFlow: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var ollamaSetupService: OllamaSetupService  // observe AI setup state directly (STATE-4)
     @State private var currentStep = 0
     @State private var fullDiskAccessGranted = false
     @State private var hasCheckedAccess = false
@@ -458,7 +459,9 @@ private func openPrivacyPane(_ pane: String) {
 }
 
 #Preview {
-    OnboardingFlow()
-        .environmentObject(AppState())
+    let state = AppState()
+    return OnboardingFlow()
+        .environmentObject(state)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 900, height: 600)
 }

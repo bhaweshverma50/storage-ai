@@ -9,6 +9,8 @@ struct StorageAIApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(appState)
+                .environmentObject(appState.scanService)
+                .environmentObject(appState.ollamaSetupService)
                 .preferredColorScheme(appState.effectiveColorScheme)
                 .tint(appState.colorTheme.accentColor)
                 .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
@@ -43,6 +45,8 @@ struct StorageAIApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(appState)
+                .environmentObject(appState.scanService)
+                .environmentObject(appState.ollamaSetupService)
                 .environment(\.accentTheme, appState.colorTheme.accentColor)
                 .environment(\.fontScale, appState.fontSize.scale)
                 .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
@@ -112,7 +116,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - Menu Bar View
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
-    
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
+
     private let labelWidth: CGFloat = 70
     
     var body: some View {
@@ -377,7 +382,10 @@ struct RootView: View {
 }
 
 #Preview("App") {
-    RootView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return RootView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .environment(\.accentTheme, .blue)
 }

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService            // observe scan updates directly (STATE-4)
+    @EnvironmentObject private var ollamaSetupService: OllamaSetupService  // observe AI setup state directly (STATE-4)
     @State private var newExcludedPath = ""
     @State private var aiTestMessage: String?
     @State private var aiTestError: String?
@@ -671,7 +673,10 @@ struct CompactSettingsToggle: View {
 }
 
 #Preview {
-    SettingsView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return SettingsView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 900, height: 800)
 }

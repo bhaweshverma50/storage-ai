@@ -100,19 +100,11 @@ final class AppState: ObservableObject {
         // survive relaunch instead of resetting to defaults each session.
         settings = SettingsStore.load()
 
-        // Forward changes from scanService to trigger UI updates
-        scanService.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-
-        // Forward changes from ollamaSetupService to trigger UI updates
-        ollamaSetupService.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
+        // NOTE: scanService / ollamaSetupService are exposed as their own EnvironmentObjects
+        // (injected at the scene roots) so only views that actually read scan/AI state observe
+        // them. We deliberately do NOT re-broadcast their objectWillChange through AppState —
+        // doing so invalidated every view reading AppState (e.g. theme-only views) on every
+        // throttled scan tick. See STATE-4.
 
         // Persist settings whenever they change (skip the initial value).
         $settings
