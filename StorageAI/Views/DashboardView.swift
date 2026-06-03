@@ -281,35 +281,8 @@ struct DashboardView: View {
     }
     
     private func startScan() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        
-        // Scan the entire home directory to capture all user data
-        var roots = [
-            home,  // Full home directory captures everything including hidden folders, dev tools, etc.
-            URL(fileURLWithPath: "/Applications")
-        ]
-        
-        // Add developer directories that are often outside home
-        let developerPaths = [
-            "/opt/homebrew",           // Homebrew on Apple Silicon
-            "/usr/local",              // Homebrew on Intel Macs
-            "/opt/local"               // MacPorts
-        ]
-        for path in developerPaths {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: url.path) {
-                roots.append(url)
-            }
-        }
-        
-        if appState.settings.includeSystem {
-            roots.append(URL(fileURLWithPath: "/System"))
-            roots.append(URL(fileURLWithPath: "/Library"))
-            roots.append(URL(fileURLWithPath: "/private/var"))
-        }
-        
-        roots = roots.filter { FileManager.default.fileExists(atPath: $0.path) }
-        appState.scanService.startScan(settings: appState.settings, roots: roots)
+        appState.scanService.startScan(settings: appState.settings,
+                                       roots: ScanRootsBuilder.roots(settings: appState.settings))
     }
     
     private func loadAIRecommendations() {
