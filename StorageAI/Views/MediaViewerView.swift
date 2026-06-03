@@ -607,6 +607,35 @@ struct MediaViewerView: View {
         }
     }
     
+    /// Turn a free-text AI tip into an actionable suggestion by inferring the action and the
+    /// affected items from the analyzed media, so "Apply" selects real files instead of nothing.
+    private func actionableSuggestion(from text: String, items: [MediaItem]) -> MediaSuggestion {
+        let lower = text.lowercased()
+        func savings(_ xs: [MediaItem]) -> Int64 { xs.reduce(0) { $0 + $1.sizeBytes } }
+
+        if lower.contains("screenshot") {
+            let affected = items.filter { $0.type == .screenshot }
+            return MediaSuggestion(title: "Screenshots", description: text, icon: "camera.viewfinder",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .delete)
+        }
+        if lower.contains("large") || lower.contains("video") || lower.contains("compress") {
+            let affected = items.filter { $0.subcategories.contains(.largeFiles) }
+            return MediaSuggestion(title: "Large files", description: text, icon: "arrow.down.circle",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .compress)
+        }
+        if lower.contains("old") || lower.contains("year") || lower.contains("unused") || lower.contains("access") {
+            let affected = items.filter { $0.subcategories.contains(.oldMedia) }
+            return MediaSuggestion(title: "Old media", description: text, icon: "clock.arrow.circlepath",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .organize)
+        }
+        // Fallback: informational tip with no direct action.
+        return MediaSuggestion(title: "Tip", description: text, icon: "wand.and.stars",
+                               color: .purple, potentialSavings: nil, affectedItems: [], action: .review)
+    }
+
     private func loadAISuggestions() async {
         guard appState.settings.ollamaEnabled else { return }
         guard let stats = analysisResult?.stats else { return }
@@ -629,25 +658,16 @@ struct MediaViewerView: View {
         """
         
         if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
+            let items = mediaItems
             let suggestions = response
                 .components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-                .map { $0.replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression) }
+                // Strip bullets AND numbered prefixes that small models emit.
+                .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
                 .prefix(4)
-                .enumerated()
-                .map { index, text in
-                    MediaSuggestion(
-                        title: "AI Tip \(index + 1)",
-                        description: text,
-                        icon: "wand.and.stars",
-                        color: .purple,
-                        potentialSavings: nil,
-                        affectedItems: [],
-                        action: .review
-                    )
-                }
-            
+                .map { actionableSuggestion(from: $0, items: items) }
+
             await MainActor.run {
                 aiSuggestions = Array(suggestions)
                 isLoadingAI = false

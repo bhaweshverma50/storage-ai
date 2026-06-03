@@ -288,17 +288,30 @@ struct DashboardView: View {
         
         Task {
             let summary = appState.scanService.summary
+            // Ground the model in the actual reclaimable candidates (cleanup targets) so its
+            // tips reference things that really exist and that the app can act on, rather than
+            // generic advice derived from totals alone.
+            let reclaimable = cleanupTargets
+                .filter { $0.estimatedBytes > 0 }
+                .prefix(6)
+                .map { "- \($0.title): \(Formatters.bytes($0.estimatedBytes)) reclaimable" }
+                .joined(separator: "\n")
+
             let prompt = """
-            Analyze this Mac storage data and provide 3-4 specific, actionable cleanup recommendations:
-            
+            Analyze this Mac storage data and provide 3-4 specific, actionable cleanup recommendations.
+            Only recommend things supported by the data below; do not invent files or apps.
+
             Total scanned: \(Formatters.bytes(summary.totalBytes))
             Categories:
             \(summary.buckets.map { "- \($0.category.displayName): \(Formatters.bytes($0.bytes))" }.joined(separator: "\n"))
-            
+
             Top apps by size:
             \(topApps.prefix(5).map { "- \($0.name): \(Formatters.bytes($0.totalBytes))" }.joined(separator: "\n"))
-            
-            Give brief, actionable tips. Format as a simple bullet list without explanations.
+
+            Reclaimable cleanup targets:
+            \(reclaimable.isEmpty ? "- (none detected yet)" : reclaimable)
+
+            Give brief, actionable tips, prioritizing the largest safe space savings. Format as a simple bullet list without explanations.
             """
             
             if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
