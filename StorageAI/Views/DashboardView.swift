@@ -338,7 +338,8 @@ struct DashboardView: View {
                         .components(separatedBy: "\n")
                         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                         .filter { !$0.isEmpty }
-                        .map { $0.replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression) }
+                        // Strip bullets AND numbered prefixes ("1." / "2)") that small models emit.
+                        .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
                     isLoadingAI = false
                 }
             } else {

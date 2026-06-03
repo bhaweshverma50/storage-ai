@@ -124,45 +124,41 @@ enum OllamaClient {
     static func generate(
         prompt: String,
         model: String = defaultModel,
-        temperature: Double = 0.7,
-        maxTokens: Int? = nil
+        temperature: Double = 0.3,
+        maxTokens: Int? = nil,
+        system: String? = nil,
+        format: String? = nil
     ) async throws -> String {
-        // First check if Ollama is available
-        guard await isAvailable() else {
-            throw OllamaError.notRunning
-        }
-        
+        // No separate /api/tags pre-check: the POST below already surfaces connection/timeout
+        // errors, so we avoid the extra round-trip (and its 5s timeout) on every call.
         let url = URL(string: "\(baseURL)/api/generate")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = timeout
-        
+
+        var options: [String: Any] = ["temperature": temperature]
+        if let maxTokens { options["num_predict"] = maxTokens }
+
         var payload: [String: Any] = [
             "model": model,
             "prompt": prompt,
             "stream": false,
-            "options": [
-                "temperature": temperature
-            ]
+            "options": options
         ]
-        
-        if let maxTokens {
-            var options = payload["options"] as? [String: Any] ?? [:]
-            options["num_predict"] = maxTokens
-            payload["options"] = options
-        }
-        
+        if let system { payload["system"] = system }
+        if let format { payload["format"] = format }
+
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        
+
         do {
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = timeout
             config.timeoutIntervalForResource = timeout * 2
             let session = URLSession(configuration: config)
-            
+
             let (data, response) = try await session.data(for: request)
-            
+
             if let http = response as? HTTPURLResponse {
                 if http.statusCode == 404 {
                     throw OllamaError.modelNotFound(model)
@@ -171,63 +167,74 @@ enum OllamaClient {
                     throw OllamaError.badStatus(http.statusCode)
                 }
             }
-            
+
             let decoded = try JSONDecoder().decode(GenerateResponse.self, from: data)
             let trimmed = decoded.response.trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
             if trimmed.isEmpty {
                 throw OllamaError.emptyResponse
             }
-            
+
             return trimmed
-            
+
         } catch let error as OllamaError {
             throw error
         } catch let error as URLError {
-            if error.code == .timedOut {
+            switch error.code {
+            case .timedOut:
                 throw OllamaError.timeout
+            case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+                throw OllamaError.notRunning
+            default:
+                throw OllamaError.connectionFailed
             }
-            throw OllamaError.connectionFailed
         } catch is DecodingError {
             throw OllamaError.invalidResponse
         }
     }
-    
+
     // MARK: - Generate with Retry
+    /// Runs `generate`, retrying only on timeouts. `maxAttempts` is the TOTAL number of tries.
     static func generateWithRetry(
         prompt: String,
         model: String = defaultModel,
-        maxRetries: Int = 2
+        temperature: Double = 0.3,
+        maxTokens: Int? = nil,
+        system: String? = nil,
+        maxAttempts: Int = 2
     ) async throws -> String {
-        var lastError: Error?
-        
-        for attempt in 0..<maxRetries {
+        var lastError: Error = OllamaError.connectionFailed
+        for attempt in 0..<max(1, maxAttempts) {
             do {
-                return try await generate(prompt: prompt, model: model)
+                return try await generate(prompt: prompt, model: model, temperature: temperature, maxTokens: maxTokens, system: system)
             } catch OllamaError.timeout {
                 lastError = OllamaError.timeout
-                // Wait before retry
                 try? await Task.sleep(nanoseconds: UInt64(1_000_000_000 * (attempt + 1)))
             } catch {
-                throw error // Don't retry other errors
+                throw error // Don't retry non-timeout errors
             }
         }
-        
-        throw lastError ?? OllamaError.connectionFailed
+        throw lastError
     }
     
     // MARK: - Check if Model Exists
     
+    /// Does an installed model name satisfy a request for `requested`? Compares on the base
+    /// (pre-colon) name so that "llama3.2" does NOT match "llama3", while ":latest"/tag
+    /// variants of the same base do match.
+    static func modelNameMatches(requested: String, installed: String) -> Bool {
+        guard !installed.isEmpty, !requested.isEmpty else { return false }
+        if requested == installed { return true }
+        func base(_ s: String) -> String { s.split(separator: ":").first.map(String.init) ?? s }
+        let rb = base(requested), ib = base(installed)
+        return !ib.isEmpty && rb == ib
+    }
+
     /// Check if a specific model is available locally
     static func hasModel(_ model: String) async -> Bool {
         do {
             let models = try await listModels()
-            // Check for exact match or match without tag (e.g., "llama3.2" matches "llama3.2:latest")
-            return models.contains { modelName in
-                modelName == model ||
-                modelName.hasPrefix(model + ":") ||
-                model.hasPrefix(modelName.split(separator: ":").first.map(String.init) ?? "")
-            }
+            return models.contains { modelNameMatches(requested: model, installed: $0) }
         } catch {
             return false
         }
