@@ -11,6 +11,7 @@ struct DashboardView: View {
     @State private var selectedNavItem: NavigationItem = .overview
     @State private var aiRecommendations: [String] = []
     @State private var isLoadingAI = false
+    @State private var aiUsedFallback = false  // true when AI was unavailable and we showed rule-based tips
     
     enum NavigationItem: String, CaseIterable, Identifiable {
         case overview = "Overview"
@@ -176,6 +177,7 @@ struct DashboardView: View {
                     topApps: topApps,
                     aiRecommendations: aiRecommendations,
                     isLoadingAI: isLoadingAI,
+                    aiUsedFallback: aiUsedFallback,
                     onStartScan: startScan,
                     onCancelScan: { appState.scanService.cancelScan() },
                     onLoadAI: loadAIRecommendations
@@ -227,6 +229,9 @@ struct DashboardView: View {
                 }
                 // Also load cleanup targets in background
                 await loadCleanupTargets()
+                // Proactively load AI recommendations so they appear without hunting for the
+                // refresh button (only runs when AI is enabled).
+                loadAIRecommendations()
                 return
             }
         } catch {
@@ -253,10 +258,12 @@ struct DashboardView: View {
         }
         
         await loadCleanupTargets()
-        
+
         await MainActor.run {
             topApps = Array(apps)
             isLoadingApps = false
+            // Refresh AI recommendations against the new data (covers first load + post-scan).
+            loadAIRecommendations()
         }
     }
     
@@ -283,10 +290,12 @@ struct DashboardView: View {
     }
     
     private func loadAIRecommendations() {
-        guard appState.settings.ollamaEnabled else { return }
-        
+        // Only run when AI is enabled, not already loading, and there's scan data to analyze.
+        guard appState.settings.ollamaEnabled, !isLoadingAI else { return }
+        guard appState.scanService.summary.totalBytes > 0 else { return }
+
         isLoadingAI = true
-        
+
         Task {
             let summary = appState.scanService.summary
             // Ground the model in the actual reclaimable candidates (cleanup targets) so its
@@ -316,18 +325,29 @@ struct DashboardView: View {
             """
             
             if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
+                let parsed = response
+                    .components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    // Strip bullets AND numbered prefixes ("1." / "2)") that small models emit.
+                    .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
+                    .filter { !$0.isEmpty }
                 await MainActor.run {
-                    aiRecommendations = response
-                        .components(separatedBy: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                        // Strip bullets AND numbered prefixes ("1." / "2)") that small models emit.
-                        .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
+                    if parsed.isEmpty {
+                        // Model returned nothing usable — fall back rather than show an empty card.
+                        aiRecommendations = Recommendations.ruleBased(summary: summary, topApps: topApps)
+                        aiUsedFallback = true
+                    } else {
+                        aiRecommendations = parsed
+                        aiUsedFallback = false
+                    }
                     isLoadingAI = false
                 }
             } else {
+                // Ollama unreachable / model missing / disabled mid-flight — show basic tips and say so.
                 await MainActor.run {
                     aiRecommendations = Recommendations.ruleBased(summary: summary, topApps: topApps)
+                    aiUsedFallback = true
                     isLoadingAI = false
                 }
             }
@@ -375,6 +395,7 @@ struct OverviewView: View {
     let topApps: [AppEntry]
     let aiRecommendations: [String]
     let isLoadingAI: Bool
+    let aiUsedFallback: Bool
     let onStartScan: () -> Void
     let onCancelScan: () -> Void
     let onLoadAI: () -> Void
@@ -615,10 +636,22 @@ struct OverviewView: View {
                             }
                             Spacer()
                         } else {
-                            let recs = aiRecommendations.isEmpty 
+                            let recs = aiRecommendations.isEmpty
                                 ? Recommendations.ruleBased(summary: appState.scanService.summary, topApps: topApps)
                                 : aiRecommendations
-                            
+
+                            if aiUsedFallback {
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10 * fontScale))
+                                        .foregroundStyle(.orange)
+                                    Text("AI unavailable — showing basic tips. Check Ollama in Settings.")
+                                        .font(.system(size: 10 * fontScale))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
                             if recs.isEmpty {
                                 Spacer()
                                 Text("Run a scan to get recommendations")
