@@ -128,6 +128,23 @@ struct AppSettings: Codable, Equatable {
     var includeHidden = false
     var excludedPaths: [String] = []
     var ollamaEnabled = true
+    var ollamaModel = "llama3.2"
+
+    enum CodingKeys: String, CodingKey {
+        case includeSystem, includeHidden, excludedPaths, ollamaEnabled, ollamaModel
+    }
+
+    init() {}
+
+    // Tolerant decode so older persisted settings (without ollamaModel) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        includeSystem = try c.decodeIfPresent(Bool.self, forKey: .includeSystem) ?? false
+        includeHidden = try c.decodeIfPresent(Bool.self, forKey: .includeHidden) ?? false
+        excludedPaths = try c.decodeIfPresent([String].self, forKey: .excludedPaths) ?? []
+        ollamaEnabled = try c.decodeIfPresent(Bool.self, forKey: .ollamaEnabled) ?? true
+        ollamaModel = try c.decodeIfPresent(String.self, forKey: .ollamaModel) ?? "llama3.2"
+    }
 }
 
 // MARK: - AppStorage Extensions

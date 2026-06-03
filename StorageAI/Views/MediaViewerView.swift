@@ -628,7 +628,7 @@ struct MediaViewerView: View {
         Provide brief, actionable tips as a bullet list. Focus on specific actions that would save the most space.
         """
         
-        if let response = await Recommendations.llmSummary(prompt: prompt) {
+        if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
             let suggestions = response
                 .components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

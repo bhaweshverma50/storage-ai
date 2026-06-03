@@ -15,6 +15,16 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(loaded, AppSettings())
     }
 
+    func testLegacySettingsWithoutModelFieldDecodeWithDefault() throws {
+        // Settings persisted before ollamaModel existed must still decode.
+        let legacy = #"{"includeSystem":true,"includeHidden":false,"excludedPaths":["/x"],"ollamaEnabled":false}"#
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacy.utf8))
+        XCTAssertTrue(decoded.includeSystem)
+        XCTAssertEqual(decoded.excludedPaths, ["/x"])
+        XCTAssertFalse(decoded.ollamaEnabled)
+        XCTAssertEqual(decoded.ollamaModel, "llama3.2") // default applied
+    }
+
     func testSaveThenLoadRoundTripsAllFields() {
         let defaults = makeDefaults()
         var settings = AppSettings()

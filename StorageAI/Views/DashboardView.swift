@@ -299,7 +299,7 @@ struct DashboardView: View {
             Give brief, actionable tips. Format as a simple bullet list without explanations.
             """
             
-            if let response = await Recommendations.llmSummary(prompt: prompt) {
+            if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
                 await MainActor.run {
                     aiRecommendations = response
                         .components(separatedBy: "\n")

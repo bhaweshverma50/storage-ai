@@ -372,23 +372,32 @@ struct SettingsView: View {
                             }
                         }
                         
-                        // Models (only show if connected)
+                        // Models (only show if connected) — selectable so the chosen model is
+                        // actually used for recommendations instead of the hardcoded default.
                         if !availableModels.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Available Models")
+                                Text("Model for recommendations")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
-                                
+
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 6) {
                                         ForEach(availableModels, id: \.self) { model in
-                                            Text(model)
-                                                .font(.caption2.weight(.medium))
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 4)
-                                                .background(accentTheme.opacity(0.15))
-                                                .foregroundStyle(accentTheme)
-                                                .clipShape(Capsule())
+                                            let isSelected = appState.settings.ollamaModel == model
+                                            Button {
+                                                appState.settings.ollamaModel = model
+                                            } label: {
+                                                Text(model)
+                                                    .font(.caption2.weight(.medium))
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(isSelected ? accentTheme : accentTheme.opacity(0.15))
+                                                    .foregroundStyle(isSelected ? .white : accentTheme)
+                                                    .clipShape(Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityLabel("Use model \(model)")
+                                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                                         }
                                     }
                                 }
