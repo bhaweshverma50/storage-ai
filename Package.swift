@@ -14,6 +14,11 @@ let package = Package(
             name: "StorageAI",
             path: "StorageAI",
             exclude: ["Info.plist"]
+        ),
+        .testTarget(
+            name: "StorageAITests",
+            dependencies: ["StorageAI"],
+            path: "Tests/StorageAITests"
         )
     ]
 )

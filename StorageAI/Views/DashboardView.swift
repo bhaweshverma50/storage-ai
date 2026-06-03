@@ -184,11 +184,20 @@ struct DashboardView: View {
                 MediaViewerView()
             case .applications:
                 AppDetailView(apps: topApps) { _ in
-                    // Refresh disk info when cleanup happens
+                    // Refresh disk usage and reload the app list so removed/uninstalled apps disappear.
                     appState.scanService.refreshDiskInfo()
+                    Task { await loadAppData() }
                 }
             case .cleanup:
-                CleanupView(targets: cleanupTargets, isLoading: isLoadingCleanup)
+                CleanupView(
+                    targets: cleanupTargets,
+                    isLoading: isLoadingCleanup,
+                    isScanning: appState.scanService.isScanning,
+                    onCleanupCompleted: {
+                        appState.scanService.refreshDiskInfo()
+                        await loadCleanupTargets()
+                    }
+                )
             case .settings:
                 SettingsView()
             }

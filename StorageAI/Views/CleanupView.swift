@@ -3,10 +3,15 @@ import SwiftUI
 struct CleanupView: View {
     let targets: [CleanupTarget]
     var isLoading: Bool = false
+    /// True while a scan is running — cleanup is disabled to avoid mutating the filesystem mid-scan.
+    var isScanning: Bool = false
+    /// Called after a real (non-dry-run) cleanup so the parent can refresh disk/accounting and rebuild targets.
+    var onCleanupCompleted: (() async -> Void)? = nil
     @State private var selection = Set<UUID>()
     @State private var dryRun = true
     @State private var isDeleting = false
     @State private var lastDeleted: [URL] = []
+    @State private var lastFreedBytes: Int64 = 0
     @State private var errorMessage: String?
     @State private var showConfirmation = false
     @State private var filter: CleanupScope? = nil
@@ -40,16 +45,34 @@ struct CleanupView: View {
                 .padding(24)
             }
         }
-        .alert("Confirm Cleanup", isPresented: $showConfirmation) {
+        .alert(dryRun ? "Preview Cleanup" : "Move to Trash?", isPresented: $showConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button(dryRun ? "Preview" : "Delete", role: dryRun ? nil : .destructive) {
+            Button(dryRun ? "Preview" : "Move to Trash", role: dryRun ? nil : .destructive) {
                 runCleanup()
             }
         } message: {
-            Text(dryRun 
-                 ? "This will show you what would be deleted without actually removing anything."
-                 : "This will permanently delete the selected items. This action cannot be undone.")
+            Text(confirmationMessage)
         }
+    }
+
+    // Per-target confirmation copy: names the exact targets and their sizes, states that
+    // items go to the Trash (recoverable), and warns when Deep Clean targets are selected.
+    private var confirmationMessage: String {
+        if dryRun {
+            return "This will show what would be removed, without deleting anything."
+        }
+        let lines = selectedTargets
+            .map { "•  \($0.title) — \(Formatters.bytes($0.estimatedBytes))" }
+            .joined(separator: "\n")
+        var msg = "These items will be moved to the Trash (you can recover them):\n\n\(lines)"
+        if selectedTargets.contains(where: { $0.scope == .aggressive }) {
+            msg += "\n\n⚠️ Deep Clean targets (Downloads, App Data, Containers) can contain important files — review carefully before continuing."
+        }
+        return msg
+    }
+
+    private var selectedTargets: [CleanupTarget] {
+        targets.filter { selection.contains($0.id) }
     }
     
     // MARK: - Header
@@ -217,12 +240,20 @@ struct CleanupView: View {
                 )
             }
             
+            if isScanning {
+                MessageBanner(
+                    icon: "hourglass",
+                    message: "A scan is in progress. Cleanup is paused until it finishes.",
+                    color: .orange
+                )
+            }
+
             if !lastDeleted.isEmpty {
                 MessageBanner(
                     icon: "checkmark.circle.fill",
-                    message: dryRun 
-                        ? "Preview: Would delete \(lastDeleted.count) items"
-                        : "Successfully deleted \(lastDeleted.count) items",
+                    message: dryRun
+                        ? "Preview: would move \(lastDeleted.count) items to Trash"
+                        : "Moved \(lastDeleted.count) items to Trash (\(Formatters.bytes(lastFreedBytes)) freed)",
                     color: .green
                 )
             }
@@ -250,7 +281,7 @@ struct CleanupView: View {
             .buttonStyle(.borderedProminent)
             .tint(dryRun ? .blue : .red)
             .controlSize(.large)
-            .disabled(isDeleting)
+            .disabled(isDeleting || isScanning)
             Spacer()
         }
     }
@@ -277,26 +308,38 @@ struct CleanupView: View {
     
     // MARK: - Actions
     private func runCleanup() {
+        guard !isScanning else {
+            errorMessage = "A scan is in progress. Wait for it to finish before cleaning up."
+            return
+        }
         isDeleting = true
         errorMessage = nil
-        
-        let selected = targets.filter { selection.contains($0.id) }
-        
+
+        let selected = selectedTargets
+        let isDry = dryRun
+
         Task {
-            do {
-                let deleted = try DeleteEngine.delete(targets: selected, dryRun: dryRun)
-                await MainActor.run {
-                    lastDeleted = deleted
-                    if !dryRun {
-                        selection.removeAll()
-                    }
-                    isDeleting = false
+            let outcome = await Task.detached(priority: .userInitiated) {
+                DeleteEngine.delete(targets: selected, dryRun: isDry)
+            }.value
+
+            // After a real delete, let the parent refresh disk usage and rebuild targets so
+            // freed space and per-card estimates reflect reality (no stale figures / re-deletes).
+            if !isDry {
+                await onCleanupCompleted?()
+            }
+
+            await MainActor.run {
+                lastDeleted = outcome.trashed
+                lastFreedBytes = outcome.freedBytes
+                if !isDry {
+                    selection.removeAll()
                 }
-            } catch {
-                await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isDeleting = false
-                }
+                var problems: [String] = []
+                if outcome.failedCount > 0 { problems.append("\(outcome.failedCount) couldn't be moved to Trash") }
+                if outcome.blockedCount > 0 { problems.append("\(outcome.blockedCount) skipped for safety") }
+                errorMessage = problems.isEmpty ? nil : problems.joined(separator: " · ")
+                isDeleting = false
             }
         }
     }

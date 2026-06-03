@@ -202,7 +202,7 @@ enum AppAttribution {
         return allApps
     }
 
-    private static func relatedSupportPaths(appName: String, bundleId: String?) -> (support: [URL], caches: [URL], containers: [URL]) {
+    static func relatedSupportPaths(appName: String, bundleId: String?) -> (support: [URL], caches: [URL], containers: [URL]) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var support: [URL] = []
         var caches: [URL] = []

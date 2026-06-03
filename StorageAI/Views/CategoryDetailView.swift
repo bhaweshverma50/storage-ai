@@ -226,13 +226,13 @@ struct CategoryFilesSheet: View {
             }
         }
         .frame(width: 800, height: 600) // Increased width for better table view
-        .alert("Delete \(selection.count) files?", isPresented: $showDeleteAlert) {
+        .alert("Move \(selection.count) files to Trash?", isPresented: $showDeleteAlert) {
             Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
+            Button("Move to Trash", role: .destructive) {
                 deleteSelected()
             }
         } message: {
-            Text("This action cannot be undone.")
+            Text("The selected files will be moved to the Trash. You can recover them from the Trash if needed.")
         }
         .onAppear { updateFilteredFiles() }
         .onChange(of: searchText) { _, _ in updateFilteredFiles() }
@@ -342,41 +342,34 @@ struct CategoryFilesSheet: View {
         cachedFilteredFiles.reduce(0) { $0 + $1.sizeBytes }
     }
 
-    // ... (Keep existing deleteSelected logic)
     private func deleteSelected() {
         let toDelete = cachedFilteredFiles.filter { selection.contains($0.id) }
-        
-        var deletedIds: Set<UUID> = []
-        var failedFiles: [(name: String, error: String)] = []
-        
-        for file in toDelete {
-            do {
-                try FileManager.default.trashItem(at: file.url, resultingItemURL: nil)
-                deletedIds.insert(file.id)
-            } catch {
-                do {
-                    try FileManager.default.removeItem(at: file.url)
-                    deletedIds.insert(file.id)
-                } catch let removeError {
-                    failedFiles.append((file.url.lastPathComponent, removeError.localizedDescription))
-                }
-            }
-        }
-        
+
+        // Move to Trash via the safe engine. We never permanently delete: items that can't be
+        // trashed are reported and left in place, and critical system paths are refused.
+        let urls = toDelete.map(\.url)
+        let outcome = DeleteEngine.trashFiles(urls)
+
+        // Map trashed URLs back to FileEntry ids so we update in-memory state accurately.
+        let trashedURLPaths = Set(outcome.trashed.map { $0.standardizedFileURL.path })
+        let deletedIds = Set(toDelete.filter { trashedURLPaths.contains($0.url.standardizedFileURL.path) }.map(\.id))
+
         if !deletedIds.isEmpty {
             appState.scanService.removeEntries(category: category, ids: deletedIds)
             selection.subtract(deletedIds)
             appState.scanService.refreshDiskInfo()
         }
-        
-        if failedFiles.isEmpty {
+
+        let problemCount = outcome.failedCount + outcome.blockedCount
+        if problemCount == 0 {
             deleteError = nil
         } else if deletedIds.isEmpty {
-            deleteError = "\"\(failedFiles[0].name)\" couldn't be removed."
+            let first = outcome.failed.first?.url.lastPathComponent ?? outcome.blocked.first?.lastPathComponent ?? "Item"
+            deleteError = "\"\(first)\" couldn't be moved to Trash."
         } else {
-            deleteError = "Deleted \(deletedIds.count) files. \(failedFiles.count) failed."
+            deleteError = "Moved \(deletedIds.count) to Trash. \(problemCount) couldn't be removed."
         }
-        
+
         updateFilteredFiles()
     }
 }

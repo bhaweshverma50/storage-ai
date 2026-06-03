@@ -326,88 +326,128 @@ struct AppDetailSheet: View {
         return CGFloat(bytes) / CGFloat(currentTotalBytes)
     }
     
-    // MARK: - Logic Helpers (Stubbed to call existing logic or simple re-implementations)
-    // In a real refactor, these should be in a ViewModel or Service, but for now we keep them in view for compatibility
-    
+    // MARK: - Path discovery
+
+    /// Cache directories attributable to this app (by display name and bundle id).
     private var cachePaths: [URL] {
-        // Reuse logic from previous implementation
-        // For simplicity in this fix, I'll rely on the fact that DeleteEngine handles this now
-        // But we need to identify paths to clean.
-        // Re-implementing path discovery logic locally here for the sheet to work standalone
-        
         let home = FileManager.default.homeDirectoryForCurrentUser
-        var paths: [URL] = []
-        
-        let cachesByName = home.appendingPathComponent("Library/Caches/\(app.name)")
-        if FileManager.default.fileExists(atPath: cachesByName.path) { paths.append(cachesByName) }
-        
+        var paths = [home.appendingPathComponent("Library/Caches/\(app.name)")]
         if let bundleId = app.bundleIdentifier {
-            let cachesByBundleId = home.appendingPathComponent("Library/Caches/\(bundleId)")
-            if FileManager.default.fileExists(atPath: cachesByBundleId.path) { paths.append(cachesByBundleId) }
+            paths.append(home.appendingPathComponent("Library/Caches/\(bundleId)"))
         }
-        return paths
+        return paths.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
-    
+
+    /// All support/cache/container directories for this app. For orphaned data entries the
+    /// bundleURL itself points at the data folder, so include it.
+    private var dataPaths: [URL] {
+        let related = AppAttribution.relatedSupportPaths(appName: app.name, bundleId: app.bundleIdentifier)
+        var all = related.support + related.caches + related.containers
+        if isOrphanedApp { all.append(app.bundleURL) }
+        return all.filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    // MARK: - Real cleanup actions (move to Trash; never permanent, never simulated)
+
     private func cleanCache() {
         isProcessing = true
-        
-        // Use the new safe DeleteEngine
-        // Note: CleanupTarget model doesn't support manual ID or isSelected state in init
-        // We create a temporary target for the engine
-        let targets = [CleanupTarget(
-            title: "Cache",
-            description: "App Cache",
-            scope: .safe,
-            paths: cachePaths,
-            estimatedBytes: currentCacheSize,
-            icon: "trash"
-        )]
-        
+        operationError = nil
+        operationResult = nil
+
+        let targets = [CleanupTarget(title: "Cache", description: "App Cache", scope: .safe,
+                                     paths: cachePaths, estimatedBytes: currentCacheSize, icon: "trash")]
         Task {
-            do {
-                _ = try DeleteEngine.delete(targets: targets, dryRun: false)
-                await MainActor.run {
-                    let freed = currentCacheSize // Approximation
+            let outcome = await Task.detached(priority: .userInitiated) {
+                DeleteEngine.delete(targets: targets, dryRun: false)
+            }.value
+            await MainActor.run {
+                isProcessing = false
+                if outcome.didTrashNothing {
+                    operationError = targets[0].paths.isEmpty
+                        ? "No cache found to remove."
+                        : "Couldn't clean cache (\(outcome.failedCount + outcome.blockedCount) items skipped)."
+                } else {
                     currentCacheSize = 0
-                    isProcessing = false
-                    operationResult = "Cache cleaned successfully"
-                    onCleanup?(freed)
-                }
-            } catch {
-                await MainActor.run {
-                    isProcessing = false
-                    operationError = error.localizedDescription
+                    operationResult = "Moved \(Formatters.bytes(outcome.freedBytes)) of cache to Trash"
+                    onCleanup?(outcome.freedBytes)
                 }
             }
         }
     }
-    
+
     private func removeAppData() {
-        // Similar logic, broader scope
         isProcessing = true
-        // ... (simplified for brevity, assume similar safe delete logic)
+        operationError = nil
+        operationResult = nil
+
+        let paths = dataPaths
+        let target = CleanupTarget(title: "App Data", description: "Support, cache & containers",
+                                   scope: .aggressive, paths: paths,
+                                   estimatedBytes: currentSupportSize + currentCacheSize + currentContainerSize,
+                                   icon: "folder.badge.minus")
         Task {
-             try? await Task.sleep(nanoseconds: 1_000_000_000)
-             await MainActor.run {
-                 isProcessing = false
-                 operationResult = "Data removed (Simulation)" // Placeholder for complex logic reuse
-                 currentSupportSize = 0
-                 currentContainerSize = 0
-                 onCleanup?(100)
-             }
+            let outcome = await Task.detached(priority: .userInitiated) {
+                DeleteEngine.delete(targets: [target], dryRun: false)
+            }.value
+            await MainActor.run {
+                isProcessing = false
+                if outcome.didTrashNothing {
+                    operationError = paths.isEmpty
+                        ? "No app data found to remove."
+                        : "Couldn't remove app data (\(outcome.failedCount + outcome.blockedCount) items skipped)."
+                } else {
+                    currentSupportSize = 0
+                    currentCacheSize = 0
+                    currentContainerSize = 0
+                    let skipped = outcome.failedCount + outcome.blockedCount
+                    operationResult = skipped > 0
+                        ? "Moved \(Formatters.bytes(outcome.freedBytes)) to Trash (\(skipped) skipped)"
+                        : "Moved \(Formatters.bytes(outcome.freedBytes)) of app data to Trash"
+                    onCleanup?(outcome.freedBytes)
+                }
+            }
         }
     }
-    
+
     private func uninstallApp() {
         isProcessing = true
-         Task {
-             try? await Task.sleep(nanoseconds: 1_000_000_000)
-             await MainActor.run {
-                 isProcessing = false
-                 operationResult = "App uninstalled (Simulation)"
-                 dismiss()
-                 onCleanup?(currentTotalBytes)
-             }
+        operationError = nil
+        operationResult = nil
+
+        let bundle = app.bundleURL
+        let bundleSize = currentBundleSize
+        let dataTarget = CleanupTarget(title: "App Data", description: "", scope: .aggressive,
+                                       paths: dataPaths, estimatedBytes: 0, icon: "trash")
+        Task {
+            // 1) Remove associated data via the safe engine.
+            let dataOutcome = await Task.detached(priority: .userInitiated) {
+                DeleteEngine.delete(targets: [dataTarget], dryRun: false)
+            }.value
+
+            // 2) Move the .app bundle to Trash via NSWorkspace (prompts for auth when needed).
+            let bundleResult: Result<Int64, Error> = await withCheckedContinuation { continuation in
+                NSWorkspace.shared.recycle([bundle]) { _, error in
+                    if let error {
+                        continuation.resume(returning: .failure(error))
+                    } else {
+                        continuation.resume(returning: .success(bundleSize))
+                    }
+                }
+            }
+
+            await MainActor.run {
+                isProcessing = false
+                switch bundleResult {
+                case .success(let removedBundleBytes):
+                    let freed = dataOutcome.freedBytes + removedBundleBytes
+                    onCleanup?(freed)
+                    dismiss()
+                case .failure(let error):
+                    // Bundle couldn't be moved; still credit any data we did trash.
+                    if dataOutcome.freedBytes > 0 { onCleanup?(dataOutcome.freedBytes) }
+                    operationError = "Couldn't move \(app.name) to Trash: \(error.localizedDescription)"
+                }
+            }
         }
     }
 }
