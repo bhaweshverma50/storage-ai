@@ -25,6 +25,17 @@ enum FileTreeBuilder {
 
     private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey, .isSymbolicLinkKey]
 
+    /// Protected media-library package bundles. Descending into these triggers a blocking macOS
+    /// privacy (TCC) prompt for Photos/Apple Music access, which would stall the walk — so we
+    /// treat them as opaque leaves (don't descend) the same way the OS treats them as packages.
+    private static let protectedBundleExtensions: Set<String> = [
+        "photoslibrary", "migratedphotolibrary", "photolibrary", "aplibrary",
+        "musiclibrary", "tvlibrary", "imovielibrary", "theater"
+    ]
+    private static func isProtectedLibrary(_ url: URL) -> Bool {
+        protectedBundleExtensions.contains(url.pathExtension.lowercased())
+    }
+
     // MARK: - One-time size walk
 
     /// Walk `roots` once and record every folder's total size. Off-thread, cancellable. Retains
@@ -58,6 +69,7 @@ enum FileTreeBuilder {
             let v = try? child.resourceValues(forKeys: keys)
             if v?.isSymbolicLink == true { continue }   // don't follow symlinks (cycles / double count)
             if v?.isDirectory == true {
+                if isProtectedLibrary(child) { continue }   // don't descend (would trigger a blocking TCC prompt)
                 total += sumFolder(child, index: index, token: token, counter: &counter, progress: progress)
             } else {
                 counter += 1
@@ -78,7 +90,11 @@ enum FileTreeBuilder {
         var total: Int64 = 0
         for case let f as URL in en {
             let v = try? f.resourceValues(forKeys: keys)
-            if v?.isDirectory == true || v?.isSymbolicLink == true { continue }
+            if v?.isSymbolicLink == true { continue }
+            if v?.isDirectory == true {
+                if isProtectedLibrary(f) { en.skipDescendants() }   // don't enter protected media bundles
+                continue
+            }
             total += Int64(v?.totalFileAllocatedSize ?? v?.fileSize ?? 0)
         }
         return total
@@ -100,6 +116,7 @@ enum FileTreeBuilder {
             let v = try? child.resourceValues(forKeys: keys)
             if v?.isSymbolicLink == true { continue }
             if v?.isDirectory == true {
+                if isProtectedLibrary(child) { continue }   // skip protected media bundles (TCC)
                 folders.append(FileNode(name: child.lastPathComponent, url: child,
                                         sizeBytes: index.size(of: child), isDirectory: true))
             } else {
