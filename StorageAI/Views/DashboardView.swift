@@ -87,6 +87,8 @@ struct DashboardView: View {
                     }
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                    .accessibilityLabel(item.rawValue)
+                    .accessibilityAddTraits(selectedNavItem == item ? [.isButton, .isSelected] : [.isButton])
                 }
             }
             
@@ -518,7 +520,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 240)
+                .frame(width: halfWidth, height: 240 * fontScale)
                 
                 // Categories
                 BentoCard {
@@ -557,7 +559,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 240)
+                .frame(width: halfWidth, height: 240 * fontScale)
             }
             
             // Row 2: Recommendations + Top Apps
@@ -643,7 +645,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 200)
+                .frame(width: halfWidth, height: 200 * fontScale)
                 
                 // Top Apps
                 BentoCard {
@@ -678,7 +680,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 200)
+                .frame(width: halfWidth, height: 200 * fontScale)
             }
         }
     }

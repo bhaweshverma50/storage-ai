@@ -417,7 +417,9 @@ struct OnboardingFlow: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(currentStep == 1 && !fullDiskAccessGranted && hasCheckedAccess)
+            // Don't trap the user on the Full Disk Access step: granting it typically needs an
+            // app relaunch (so re-checking keeps returning false this session), and the app works
+            // without it — scans just show an advisory when access is missing.
         }
         .padding(32)
         .background(.ultraThinMaterial)
