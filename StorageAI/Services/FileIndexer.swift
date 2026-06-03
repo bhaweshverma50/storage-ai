@@ -234,20 +234,33 @@ enum FileIndexer {
                 var enumOptions: FileManager.DirectoryEnumerationOptions = []
                 if !shouldIncludeHidden { enumOptions.insert(.skipsHiddenFiles) }
                 
+                // Prefetch exactly the keys processBatch consumes so the enumerator caches them
+                // during the directory read — avoids a second per-file stat for every file.
                 let enumerator = FileManager.default.enumerator(
                     at: root,
-                    includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], // Minimal keys for fast traversal
+                    includingPropertiesForKeys: [
+                        .isRegularFileKey, .isDirectoryKey,
+                        .fileSizeKey, .totalFileAllocatedSizeKey, .contentModificationDateKey
+                    ],
                     options: enumOptions
                 )
-                
+
                 guard let fileEnum = enumerator else { continue }
-                
+
                 var batch: [URL] = []
                 batch.reserveCapacity(2000)
-                
-                for case let url as URL in fileEnum {
+
+                // Bound in-flight batches so a huge filesystem can't enqueue millions of pending
+                // tasks (each holding a 2000-URL array) before the pool drains them.
+                var inFlight = 0
+                let maxInFlight = max(2, ProcessInfo.processInfo.activeProcessorCount)
+
+                // Use nextObject() rather than for-in so we don't hold a non-Sendable enumerator
+                // iterator across the `await group.next()` suspension point below.
+                while let nextObject = fileEnum.nextObject() {
+                    guard let url = nextObject as? URL else { continue }
                     if cancellationToken.isCancelled { throw FileIndexerError.cancelled }
-                    
+
                     // Simple path checks (fast)
                     let path = url.path.lowercased()
                     // Skip exact excluded paths or prefixes efficiently
@@ -255,19 +268,24 @@ enum FileIndexer {
                         fileEnum.skipDescendants()
                         continue
                     }
-                    
+
                     if path.contains("/timemachine") || path.contains("/.spotlight-v100") || path.contains("/.trash") {
                         fileEnum.skipDescendants()
                         continue
                     }
-                    
+
                     batch.append(url)
-                    
+
                     if batch.count >= 2000 {
                         let batchToProcess = batch
                         batch = []
                         batch.reserveCapacity(2000)
-                        
+
+                        // Apply backpressure before enqueuing the next batch.
+                        if inFlight >= maxInFlight {
+                            _ = try await group.next()
+                            inFlight -= 1
+                        }
                         group.addTask {
                             if cancellationToken.isCancelled { return }
                             let result = processBatch(batchToProcess, classifier: classifier)
@@ -275,9 +293,10 @@ enum FileIndexer {
                                 await aggregator.add(result: result, phase: phase)
                             }
                         }
+                        inFlight += 1
                     }
                 }
-                
+
                 // Process remaining
                 if !batch.isEmpty {
                     let batchToProcess = batch

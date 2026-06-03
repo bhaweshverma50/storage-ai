@@ -101,39 +101,11 @@ actor MediaAnalysisService {
             for _ in 0..<min(maxConcurrent, batch.count) {
                 if let file = iterator.next() {
                     group.addTask { [self] in
-                        // Wrap in autoreleasepool to release Objective-C objects
-                        return autoreleasepool {
-                            var item = self.analyzeFileSynchronous(file)
-                            
-                            // Handle video duration (requires async)
-                            if item?.type == .video {
-                                // We need to get video duration synchronously within autoreleasepool
-                                // Use a simpler approach - AVURLAsset can get duration synchronously
-                                let asset = AVURLAsset(url: file.url)
-                                if let track = asset.tracks(withMediaType: .video).first {
-                                    let duration = CMTimeGetSeconds(asset.duration)
-                                    if !duration.isNaN && duration > 0 {
-                                        item = MediaItem(
-                                            id: item!.id,
-                                            url: item!.url,
-                                            type: item!.type,
-                                            sizeBytes: item!.sizeBytes,
-                                            dimensions: item!.dimensions,
-                                            duration: duration,
-                                            createdAt: item!.createdAt,
-                                            modifiedAt: item!.modifiedAt,
-                                            subcategories: item!.subcategories
-                                        )
-                                    }
-                                }
-                            }
-                            
-                            return item
-                        }
+                        await self.analyzeFileWithDuration(file)
                     }
                 }
             }
-            
+
             // Process results and add new tasks (maintains max concurrency)
             for await result in group {
                 if let item = result {
@@ -142,35 +114,11 @@ actor MediaAnalysisService {
                 // Add next task when one completes
                 if let file = iterator.next() {
                     group.addTask { [self] in
-                        return autoreleasepool {
-                            var item = self.analyzeFileSynchronous(file)
-                            
-                            if item?.type == .video {
-                                let asset = AVURLAsset(url: file.url)
-                                if let _ = asset.tracks(withMediaType: .video).first {
-                                    let duration = CMTimeGetSeconds(asset.duration)
-                                    if !duration.isNaN && duration > 0 {
-                                        item = MediaItem(
-                                            id: item!.id,
-                                            url: item!.url,
-                                            type: item!.type,
-                                            sizeBytes: item!.sizeBytes,
-                                            dimensions: item!.dimensions,
-                                            duration: duration,
-                                            createdAt: item!.createdAt,
-                                            modifiedAt: item!.modifiedAt,
-                                            subcategories: item!.subcategories
-                                        )
-                                    }
-                                }
-                            }
-                            
-                            return item
-                        }
+                        await self.analyzeFileWithDuration(file)
                     }
                 }
             }
-            
+
             return results
         }
     }
@@ -190,9 +138,12 @@ actor MediaAnalysisService {
             allItems.reserveCapacity(files.count)
         }
         
-        // Start memory pressure monitoring
+        // Start memory pressure monitoring, and ALWAYS stop it when this analysis finishes —
+        // otherwise the DispatchSource stays resumed for the process lifetime (the singleton's
+        // deinit never runs) and keeps clearing the thumbnail cache on every memory event.
         MemoryPressureMonitor.shared.start()
-        
+        defer { MemoryPressureMonitor.shared.stop() }
+
         // Start incremental cache if streaming
         if useStreaming {
             await ScanDataStore.shared.startIncrementalMediaAnalysis()
@@ -425,6 +376,26 @@ actor MediaAnalysisService {
                exif[kCGImagePropertyExifFocalLength] != nil
     }
     
+    /// Analyze a single file, awaiting video duration via the modern async AVAsset API
+    /// (the synchronous `tracks`/`duration` accessors are deprecated and block the pool thread).
+    private func analyzeFileWithDuration(_ file: FileEntry) async -> MediaItem? {
+        guard var item = autoreleasepool(invoking: { analyzeFileSynchronous(file) }) else { return nil }
+        if item.type == .video, let seconds = await getVideoDuration(url: file.url), seconds > 0 {
+            item = MediaItem(
+                id: item.id,
+                url: item.url,
+                type: item.type,
+                sizeBytes: item.sizeBytes,
+                dimensions: item.dimensions,
+                duration: seconds,
+                createdAt: item.createdAt,
+                modifiedAt: item.modifiedAt,
+                subcategories: item.subcategories
+            )
+        }
+        return item
+    }
+
     /// Get video duration
     func getVideoDuration(url: URL) async -> TimeInterval? {
         let asset = AVURLAsset(url: url)

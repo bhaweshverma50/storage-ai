@@ -86,17 +86,29 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     init() {
+        // Restore persisted user settings (scan scope, excluded paths, AI toggle) so they
+        // survive relaunch instead of resetting to defaults each session.
+        settings = SettingsStore.load()
+
         // Forward changes from scanService to trigger UI updates
         scanService.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
             }
             .store(in: &cancellables)
-        
+
         // Forward changes from ollamaSetupService to trigger UI updates
         ollamaSetupService.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        // Persist settings whenever they change (skip the initial value).
+        $settings
+            .dropFirst()
+            .sink { newValue in
+                SettingsStore.save(newValue)
             }
             .store(in: &cancellables)
     }

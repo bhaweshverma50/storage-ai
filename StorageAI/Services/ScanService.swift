@@ -267,8 +267,15 @@ final class ScanService: ObservableObject {
                             
                             // Dispatch to main thread without creating a Task
                             DispatchQueue.main.async { [weak self] in
-                                guard let self = self, !token.isCancelled else { return }
-                                
+                                // Ignore stale ticks: only apply if this is still the active scan's
+                                // token AND a scan is in progress. Otherwise a tick enqueued just
+                                // before completion/cancel could overwrite final results or
+                                // resurrect a cancelled scan's partial UI.
+                                guard let self = self,
+                                      !token.isCancelled,
+                                      self.cancellationToken === token,
+                                      self.isScanning else { return }
+
                                 // Calculate elapsed time and estimate
                                 let elapsed = self.getEffectiveElapsedTime()
                                 let estimate = self.calculateEstimatedTimeRemaining(
