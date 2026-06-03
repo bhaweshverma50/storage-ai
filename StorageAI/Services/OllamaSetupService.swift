@@ -392,7 +392,10 @@ final class OllamaSetupService: ObservableObject {
         statusMessage = "Downloading \(model) model (~2 GB)..."
         progress = 0.55
         
-        try await OllamaClient.pullModel(model) { [weak self] pullProgress, status in
+        try await OllamaClient.pullModel(
+            model,
+            shouldCancel: { [weak self] in self?.isCancelled ?? true }
+        ) { [weak self] pullProgress, status in
             Task { @MainActor in
                 guard let self = self else { return }
                 // Model pull is 55-100% of total progress

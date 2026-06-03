@@ -256,6 +256,7 @@ enum OllamaClient {
     ///   - progress: Callback with progress (0-1) and status message
     static func pullModel(
         _ model: String,
+        shouldCancel: @escaping () -> Bool = { false },
         progress: @escaping (Double, String) -> Void
     ) async throws {
         let url = URL(string: "\(baseURL)/api/pull")!
@@ -289,8 +290,9 @@ enum OllamaClient {
         let maxLineBytes = 64 * 1024
 
         for try await byte in bytes {
-            // Cooperative cancellation: stop streaming if the surrounding task is cancelled.
-            if Task.isCancelled { throw CancellationError() }
+            // Cooperative cancellation: stop streaming if the task is cancelled or the caller
+            // signals cancellation (e.g. the user pressed Cancel during a multi-GB pull).
+            if Task.isCancelled || shouldCancel() { throw CancellationError() }
 
             buffer.append(byte)
             if buffer.count > maxLineBytes {
