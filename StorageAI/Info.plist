@@ -9,15 +9,17 @@
     <key>CFBundleIdentifier</key>
     <string>com.storageai.app</string>
     <key>CFBundleVersion</key>
-    <string>30</string>
+    <string>31</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.12.1</string>
+    <string>2.13.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>StorageAI</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSAppTransportSecurity</key>
@@ -48,5 +50,17 @@
     <string>public.app-category.utilities</string>
     <key>NSSystemAdministrationUsageDescription</key>
     <string>Storage AI needs administrator access to scan and clean system files.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Storage AI measures how much disk space the files on your Desktop use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Storage AI measures how much disk space your Documents use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Storage AI measures how much disk space your Downloads use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>Storage AI can include external drives in scans when you choose to scan them.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>Storage AI can include network volumes in scans when you choose to scan them.</string>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>Storage AI only measures file sizes — it never reads your music, listening activity, or media library contents.</string>
 </dict>
 </plist>

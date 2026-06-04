@@ -13,7 +13,12 @@ let package = Package(
         .executableTarget(
             name: "StorageAI",
             path: "StorageAI",
-            exclude: ["Info.plist"]
+            exclude: ["Info.plist", "StorageAI.entitlements"]
+        ),
+        .testTarget(
+            name: "StorageAITests",
+            dependencies: ["StorageAI"],
+            path: "Tests/StorageAITests"
         )
     ]
 )

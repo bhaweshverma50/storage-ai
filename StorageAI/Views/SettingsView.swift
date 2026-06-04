@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService            // observe scan updates directly (STATE-4)
+    @EnvironmentObject private var ollamaSetupService: OllamaSetupService  // observe AI setup state directly (STATE-4)
     @State private var newExcludedPath = ""
     @State private var aiTestMessage: String?
     @State private var aiTestError: String?
@@ -372,23 +374,32 @@ struct SettingsView: View {
                             }
                         }
                         
-                        // Models (only show if connected)
+                        // Models (only show if connected) — selectable so the chosen model is
+                        // actually used for recommendations instead of the hardcoded default.
                         if !availableModels.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Available Models")
+                                Text("Model for recommendations")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
-                                
+
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: 6) {
                                         ForEach(availableModels, id: \.self) { model in
-                                            Text(model)
-                                                .font(.caption2.weight(.medium))
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 4)
-                                                .background(accentTheme.opacity(0.15))
-                                                .foregroundStyle(accentTheme)
-                                                .clipShape(Capsule())
+                                            let isSelected = appState.settings.ollamaModel == model
+                                            Button {
+                                                appState.settings.ollamaModel = model
+                                            } label: {
+                                                Text(model)
+                                                    .font(.caption2.weight(.medium))
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(isSelected ? accentTheme : accentTheme.opacity(0.15))
+                                                    .foregroundStyle(isSelected ? .white : accentTheme)
+                                                    .clipShape(Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityLabel("Use model \(model)")
+                                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                                         }
                                     }
                                 }
@@ -597,7 +608,8 @@ struct SettingsView: View {
         isTestingAI = true
         
         do {
-            let response = try await OllamaClient.generate(
+            // Round-trips to Ollama; throws if it's unreachable or the model is missing.
+            _ = try await OllamaClient.generate(
                 prompt: "Respond with exactly: AI OK",
                 maxTokens: 10
             )
@@ -661,7 +673,10 @@ struct CompactSettingsToggle: View {
 }
 
 #Preview {
-    SettingsView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return SettingsView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 900, height: 800)
 }

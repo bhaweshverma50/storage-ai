@@ -37,6 +37,16 @@ enum FontSize: String, Codable, CaseIterable {
         case .large: return "115%"
         }
     }
+
+    /// Maps the setting to a system Dynamic Type size so that views using semantic fonts
+    /// (.caption/.body/...) scale even where they don't multiply by the custom fontScale.
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .small: return .small
+        case .medium: return .large   // system default
+        case .large: return .xxLarge
+        }
+    }
 }
 
 // MARK: - Color Theme
@@ -86,17 +96,21 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     init() {
-        // Forward changes from scanService to trigger UI updates
-        scanService.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
-            .store(in: &cancellables)
-        
-        // Forward changes from ollamaSetupService to trigger UI updates
-        ollamaSetupService.objectWillChange
-            .sink { [weak self] _ in
-                self?.objectWillChange.send()
+        // Restore persisted user settings (scan scope, excluded paths, AI toggle) so they
+        // survive relaunch instead of resetting to defaults each session.
+        settings = SettingsStore.load()
+
+        // NOTE: scanService / ollamaSetupService are exposed as their own EnvironmentObjects
+        // (injected at the scene roots) so only views that actually read scan/AI state observe
+        // them. We deliberately do NOT re-broadcast their objectWillChange through AppState —
+        // doing so invalidated every view reading AppState (e.g. theme-only views) on every
+        // throttled scan tick. See STATE-4.
+
+        // Persist settings whenever they change (skip the initial value).
+        $settings
+            .dropFirst()
+            .sink { newValue in
+                SettingsStore.save(newValue)
             }
             .store(in: &cancellables)
     }
@@ -116,6 +130,23 @@ struct AppSettings: Codable, Equatable {
     var includeHidden = false
     var excludedPaths: [String] = []
     var ollamaEnabled = true
+    var ollamaModel = "llama3.2"
+
+    enum CodingKeys: String, CodingKey {
+        case includeSystem, includeHidden, excludedPaths, ollamaEnabled, ollamaModel
+    }
+
+    init() {}
+
+    // Tolerant decode so older persisted settings (without ollamaModel) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        includeSystem = try c.decodeIfPresent(Bool.self, forKey: .includeSystem) ?? false
+        includeHidden = try c.decodeIfPresent(Bool.self, forKey: .includeHidden) ?? false
+        excludedPaths = try c.decodeIfPresent([String].self, forKey: .excludedPaths) ?? []
+        ollamaEnabled = try c.decodeIfPresent(Bool.self, forKey: .ollamaEnabled) ?? true
+        ollamaModel = try c.decodeIfPresent(String.self, forKey: .ollamaModel) ?? "llama3.2"
+    }
 }
 
 // MARK: - AppStorage Extensions

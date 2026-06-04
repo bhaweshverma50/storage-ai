@@ -2,7 +2,9 @@ import SwiftUI
 
 struct AppDetailView: View {
     let apps: [AppEntry]
+    var isRefreshing: Bool = false
     var onCleanup: ((Int64) -> Void)?  // Callback when cleanup happens, with bytes freed
+    var onRefresh: (() -> Void)?       // Re-analyze apps on demand (list is cached between scans)
     @State private var searchText = ""
     @State private var selectedApp: AppEntry?
     @State private var sortOrder: SortOrder = .totalDesc
@@ -54,7 +56,7 @@ struct AppDetailView: View {
             }
             
             Spacer()
-            
+
             // Search
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
@@ -66,15 +68,30 @@ struct AppDetailView: View {
             .padding(.vertical, 8)
             .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             .frame(width: 250)
+
+            // Re-analyze on demand — the list is served from cache between scans, so sizes
+            // go stale after deletes that happen outside a cleanup action.
+            if let onRefresh {
+                Button(action: onRefresh) {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isRefreshing)
+                .help("Re-analyze apps and their data sizes")
+                .accessibilityLabel("Refresh app list")
+            }
         }
     }
     
     // MARK: - Stats Row
     private func statsRow(width: CGFloat) -> some View {
         let spacing: CGFloat = 12
-        // Ensure minimum card width for readability
-        let cardWidth = max((width - spacing * 3) / 4, 140)
-        
+        // Cards flex equally via maxWidth: .infinity, so no per-card width is computed here.
         return HStack(spacing: spacing) {
             StatBentoCard(
                 title: "Applications",

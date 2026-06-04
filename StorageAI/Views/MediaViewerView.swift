@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MediaViewerView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @Environment(\.accentTheme) private var accentTheme
     @Environment(\.fontScale) private var fontScale
     
@@ -401,7 +402,7 @@ struct MediaViewerView: View {
                 return
             }
         } catch {
-            print("Failed to load cached media analysis: \(error)")
+            Log.media.error("Failed to load cached media analysis: \(error.localizedDescription, privacy: .public)")
         }
         
         // No cache - don't auto-analyze, let user click the button
@@ -429,7 +430,7 @@ struct MediaViewerView: View {
         do {
             try await ScanDataStore.shared.saveMediaAnalysis(result)
         } catch {
-            print("Failed to cache media analysis: \(error)")
+            Log.media.error("Failed to cache media analysis: \(error.localizedDescription, privacy: .public)")
         }
     }
     
@@ -505,7 +506,7 @@ struct MediaViewerView: View {
                 appState.scanService.refreshDiskInfo()
                 
                 // Show success (could add a toast here)
-                print("Compressed \(result.successCount) files, saved \(result.formattedSavings)")
+                Log.media.info("Compressed \(result.successCount) files, saved \(result.formattedSavings, privacy: .public)")
             }
         } catch {
             await MainActor.run {
@@ -533,7 +534,7 @@ struct MediaViewerView: View {
                 try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
                 deletedCount += 1
             } catch {
-                print("Failed to delete \(item.fileName): \(error)")
+                Log.media.error("Failed to delete \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
             
             let progress = Double(index + 1) / Double(itemsToDelete.count)
@@ -607,6 +608,35 @@ struct MediaViewerView: View {
         }
     }
     
+    /// Turn a free-text AI tip into an actionable suggestion by inferring the action and the
+    /// affected items from the analyzed media, so "Apply" selects real files instead of nothing.
+    private func actionableSuggestion(from text: String, items: [MediaItem]) -> MediaSuggestion {
+        let lower = text.lowercased()
+        func savings(_ xs: [MediaItem]) -> Int64 { xs.reduce(0) { $0 + $1.sizeBytes } }
+
+        if lower.contains("screenshot") {
+            let affected = items.filter { $0.type == .screenshot }
+            return MediaSuggestion(title: "Screenshots", description: text, icon: "camera.viewfinder",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .delete)
+        }
+        if lower.contains("large") || lower.contains("video") || lower.contains("compress") {
+            let affected = items.filter { $0.subcategories.contains(.largeFiles) }
+            return MediaSuggestion(title: "Large files", description: text, icon: "arrow.down.circle",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .compress)
+        }
+        if lower.contains("old") || lower.contains("year") || lower.contains("unused") || lower.contains("access") {
+            let affected = items.filter { $0.subcategories.contains(.oldMedia) }
+            return MediaSuggestion(title: "Old media", description: text, icon: "clock.arrow.circlepath",
+                                   color: .purple, potentialSavings: savings(affected),
+                                   affectedItems: affected, action: .organize)
+        }
+        // Fallback: informational tip with no direct action.
+        return MediaSuggestion(title: "Tip", description: text, icon: "wand.and.stars",
+                               color: .purple, potentialSavings: nil, affectedItems: [], action: .review)
+    }
+
     private func loadAISuggestions() async {
         guard appState.settings.ollamaEnabled else { return }
         guard let stats = analysisResult?.stats else { return }
@@ -628,26 +658,17 @@ struct MediaViewerView: View {
         Provide brief, actionable tips as a bullet list. Focus on specific actions that would save the most space.
         """
         
-        if let response = await Recommendations.llmSummary(prompt: prompt) {
+        if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
+            let items = mediaItems
             let suggestions = response
                 .components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-                .map { $0.replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression) }
+                // Strip bullets AND numbered prefixes that small models emit.
+                .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
                 .prefix(4)
-                .enumerated()
-                .map { index, text in
-                    MediaSuggestion(
-                        title: "AI Tip \(index + 1)",
-                        description: text,
-                        icon: "wand.and.stars",
-                        color: .purple,
-                        potentialSavings: nil,
-                        affectedItems: [],
-                        action: .review
-                    )
-                }
-            
+                .map { actionableSuggestion(from: $0, items: items) }
+
             await MainActor.run {
                 aiSuggestions = Array(suggestions)
                 isLoadingAI = false
@@ -1007,7 +1028,9 @@ struct QualityOption: View {
 }
 
 #Preview {
-    MediaViewerView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return MediaViewerView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
         .frame(width: 1000, height: 800)
 }

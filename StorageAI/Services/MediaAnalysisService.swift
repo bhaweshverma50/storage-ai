@@ -101,39 +101,11 @@ actor MediaAnalysisService {
             for _ in 0..<min(maxConcurrent, batch.count) {
                 if let file = iterator.next() {
                     group.addTask { [self] in
-                        // Wrap in autoreleasepool to release Objective-C objects
-                        return autoreleasepool {
-                            var item = self.analyzeFileSynchronous(file)
-                            
-                            // Handle video duration (requires async)
-                            if item?.type == .video {
-                                // We need to get video duration synchronously within autoreleasepool
-                                // Use a simpler approach - AVURLAsset can get duration synchronously
-                                let asset = AVURLAsset(url: file.url)
-                                if let track = asset.tracks(withMediaType: .video).first {
-                                    let duration = CMTimeGetSeconds(asset.duration)
-                                    if !duration.isNaN && duration > 0 {
-                                        item = MediaItem(
-                                            id: item!.id,
-                                            url: item!.url,
-                                            type: item!.type,
-                                            sizeBytes: item!.sizeBytes,
-                                            dimensions: item!.dimensions,
-                                            duration: duration,
-                                            createdAt: item!.createdAt,
-                                            modifiedAt: item!.modifiedAt,
-                                            subcategories: item!.subcategories
-                                        )
-                                    }
-                                }
-                            }
-                            
-                            return item
-                        }
+                        await self.analyzeFileWithDuration(file)
                     }
                 }
             }
-            
+
             // Process results and add new tasks (maintains max concurrency)
             for await result in group {
                 if let item = result {
@@ -142,35 +114,11 @@ actor MediaAnalysisService {
                 // Add next task when one completes
                 if let file = iterator.next() {
                     group.addTask { [self] in
-                        return autoreleasepool {
-                            var item = self.analyzeFileSynchronous(file)
-                            
-                            if item?.type == .video {
-                                let asset = AVURLAsset(url: file.url)
-                                if let _ = asset.tracks(withMediaType: .video).first {
-                                    let duration = CMTimeGetSeconds(asset.duration)
-                                    if !duration.isNaN && duration > 0 {
-                                        item = MediaItem(
-                                            id: item!.id,
-                                            url: item!.url,
-                                            type: item!.type,
-                                            sizeBytes: item!.sizeBytes,
-                                            dimensions: item!.dimensions,
-                                            duration: duration,
-                                            createdAt: item!.createdAt,
-                                            modifiedAt: item!.modifiedAt,
-                                            subcategories: item!.subcategories
-                                        )
-                                    }
-                                }
-                            }
-                            
-                            return item
-                        }
+                        await self.analyzeFileWithDuration(file)
                     }
                 }
             }
-            
+
             return results
         }
     }
@@ -182,6 +130,10 @@ actor MediaAnalysisService {
         _ files: [FileEntry],
         progress: @escaping (Double, String?) -> Void
     ) async -> [MediaItem] {
+        // Never open Photos/Music-library content: loading it (even AVAsset metadata) raises a
+        // blocking "Apple Music / media library" TCC prompt, and those files are app-managed —
+        // not safe cleanup candidates anyway.
+        let files = files.filter { !ProtectedLibraryPaths.isInsideProtectedLibrary($0.url) }
         let total = files.count
         let useStreaming = total > 1000  // Stream to disk for large analyses
         
@@ -190,9 +142,12 @@ actor MediaAnalysisService {
             allItems.reserveCapacity(files.count)
         }
         
-        // Start memory pressure monitoring
+        // Start memory pressure monitoring, and ALWAYS stop it when this analysis finishes —
+        // otherwise the DispatchSource stays resumed for the process lifetime (the singleton's
+        // deinit never runs) and keeps clearing the thumbnail cache on every memory event.
         MemoryPressureMonitor.shared.start()
-        
+        defer { MemoryPressureMonitor.shared.stop() }
+
         // Start incremental cache if streaming
         if useStreaming {
             await ScanDataStore.shared.startIncrementalMediaAnalysis()
@@ -235,7 +190,7 @@ actor MediaAnalysisService {
             do {
                 allItems = try await ScanDataStore.shared.loadIncrementalMediaItems()
             } catch {
-                print("Failed to load incremental media items: \(error)")
+                Log.media.error("Failed to load incremental media items: \(error.localizedDescription, privacy: .public)")
             }
         }
         
@@ -425,6 +380,26 @@ actor MediaAnalysisService {
                exif[kCGImagePropertyExifFocalLength] != nil
     }
     
+    /// Analyze a single file, awaiting video duration via the modern async AVAsset API
+    /// (the synchronous `tracks`/`duration` accessors are deprecated and block the pool thread).
+    private func analyzeFileWithDuration(_ file: FileEntry) async -> MediaItem? {
+        guard var item = autoreleasepool(invoking: { analyzeFileSynchronous(file) }) else { return nil }
+        if item.type == .video, let seconds = await getVideoDuration(url: file.url), seconds > 0 {
+            item = MediaItem(
+                id: item.id,
+                url: item.url,
+                type: item.type,
+                sizeBytes: item.sizeBytes,
+                dimensions: item.dimensions,
+                duration: seconds,
+                createdAt: item.createdAt,
+                modifiedAt: item.modifiedAt,
+                subcategories: item.subcategories
+            )
+        }
+        return item
+    }
+
     /// Get video duration
     func getVideoDuration(url: URL) async -> TimeInterval? {
         let asset = AVURLAsset(url: url)
@@ -476,42 +451,30 @@ actor MediaAnalysisService {
     /// Find potential duplicate groups based on file size and name similarity
     func detectDuplicates(_ items: [MediaItem]) async -> [DuplicateGroup] {
         var groups: [DuplicateGroup] = []
-        var processedIds: Set<UUID> = []
-        
+
         // Group by exact size first (quick check)
         var sizeGroups: [Int64: [MediaItem]] = [:]
         for item in items {
             sizeGroups[item.sizeBytes, default: []].append(item)
         }
-        
-        // For items with same size, check for duplicates
+
+        // Within each same-size bucket, partition into one or more duplicate groups. The
+        // previous logic only ever produced ONE group per bucket and silently dropped a second
+        // distinct duplicate set; this forms every group.
         for (_, sameSize) in sizeGroups where sameSize.count > 1 {
-            // Further group by similar names or exact content
-            var potentialDuplicates: [MediaItem] = []
-            
+            var candidateGroups: [[MediaItem]] = []
             for item in sameSize {
-                if processedIds.contains(item.id) { continue }
-                
-                // Check if this item matches any already in potentialDuplicates
-                var foundGroup = false
-                for existing in potentialDuplicates {
-                    if areLikelyDuplicates(item, existing) {
-                        foundGroup = true
-                        break
-                    }
-                }
-                
-                if foundGroup || potentialDuplicates.isEmpty {
-                    potentialDuplicates.append(item)
-                    processedIds.insert(item.id)
+                if let idx = candidateGroups.firstIndex(where: { areLikelyDuplicates(item, $0[0]) }) {
+                    candidateGroups[idx].append(item)
+                } else {
+                    candidateGroups.append([item])
                 }
             }
-            
-            if potentialDuplicates.count > 1 {
-                groups.append(DuplicateGroup(items: potentialDuplicates))
+            for group in candidateGroups where group.count > 1 {
+                groups.append(DuplicateGroup(items: group))
             }
         }
-        
+
         return groups
     }
     
@@ -536,22 +499,22 @@ actor MediaAnalysisService {
         if nameA == nameB { return true }
         
         // Name with suffix pattern: "photo", "photo (1)", "photo copy"
-        let suffixPatterns = [" (\\d+)$", " copy( \\d+)?$", "-\\d+$", "_\\d+$"]
-        
-        let cleanA = removePatterns(from: nameA, patterns: suffixPatterns)
-        let cleanB = removePatterns(from: nameB, patterns: suffixPatterns)
-        
-        return cleanA == cleanB
+        return Self.cleanedName(nameA) == Self.cleanedName(nameB)
     }
-    
-    /// Remove common duplicate suffix patterns from a filename
-    private func removePatterns(from name: String, patterns: [String]) -> String {
+
+    /// Precompiled suffix patterns — compiling these per comparison was a hot-path cost.
+    private static let suffixRegexes: [NSRegularExpression] = {
+        [" (\\d+)$", " copy( \\d+)?$", "-\\d+$", "_\\d+$"].compactMap {
+            try? NSRegularExpression(pattern: $0, options: .caseInsensitive)
+        }
+    }()
+
+    /// Strip common duplicate suffix patterns from a filename using the precompiled regexes.
+    private static func cleanedName(_ name: String) -> String {
         var result = name
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                let range = NSRange(result.startIndex..., in: result)
-                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
-            }
+        for regex in suffixRegexes {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
         }
         return result
     }

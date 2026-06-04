@@ -15,6 +15,8 @@ final class ScanService: ObservableObject {
     @Published private(set) var progress = ScanProgress()
     @Published private(set) var isScanning = false
     @Published private(set) var lastError: String?
+    /// Non-fatal advisory shown when a scan likely under-reported due to missing Full Disk Access.
+    @Published private(set) var accessWarning: String?
     @Published private(set) var lastScanDate: Date?
     @Published private(set) var hasLoadedCache = false
     @Published private(set) var isLoadingCache = true
@@ -22,6 +24,7 @@ final class ScanService: ObservableObject {
 
     private var scanTask: Task<Void, Never>?
     private var periodicSaveTask: Task<Void, Never>?
+    private var cacheLoadTask: Task<Void, Never>?
     private var cancellationToken: CancellationToken?
     private var scanStartTime: Date?
     private var lastPeriodicSaveTime: Date?
@@ -48,11 +51,17 @@ final class ScanService: ObservableObject {
         let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
         self.summary = StorageSummary(buckets: initialBuckets)
 
-        // Load cache and performance history immediately on init
-        Task { @MainActor in
+        // Load cache and performance history immediately on init. Kept as a task others can
+        // await (see awaitCacheLoad) instead of being polled.
+        cacheLoadTask = Task { @MainActor in
             await self.loadCachedData()
             await self.loadPerformanceHistory()
         }
+    }
+
+    /// Await the initial cache load that kicks off in init (used instead of polling isLoadingCache).
+    func awaitCacheLoad() async {
+        await cacheLoadTask?.value
     }
     
     // MARK: - Performance History
@@ -148,7 +157,7 @@ final class ScanService: ObservableObject {
                 self.scanState = cached.metadata.scanState
             }
         } catch {
-            print("Failed to load cached scan data: \(error)")
+            Log.cache.error("Failed to load cached scan data: \(error.localizedDescription, privacy: .public)")
         }
 
         isLoadingCache = false
@@ -180,6 +189,7 @@ final class ScanService: ObservableObject {
         // Set scanning state IMMEDIATELY
         isScanning = true
         lastError = nil
+        accessWarning = nil
         scanStartTime = Date()
         
         // Reset pause tracking
@@ -267,8 +277,15 @@ final class ScanService: ObservableObject {
                             
                             // Dispatch to main thread without creating a Task
                             DispatchQueue.main.async { [weak self] in
-                                guard let self = self, !token.isCancelled else { return }
-                                
+                                // Ignore stale ticks: only apply if this is still the active scan's
+                                // token AND a scan is in progress. Otherwise a tick enqueued just
+                                // before completion/cancel could overwrite final results or
+                                // resurrect a cancelled scan's partial UI.
+                                guard let self = self,
+                                      !token.isCancelled,
+                                      self.cancellationToken === token,
+                                      self.isScanning else { return }
+
                                 // Calculate elapsed time and estimate
                                 let elapsed = self.getEffectiveElapsedTime()
                                 let estimate = self.calculateEstimatedTimeRemaining(
@@ -293,6 +310,14 @@ final class ScanService: ObservableObject {
                                 
                                 // Update file counts in real-time
                                 self.fileCounts = update.fileCounts
+
+                                // Stream the live top-files snapshot so category drill-down works
+                                // DURING the scan and survives cancellation/interruption (partial
+                                // saves persist it). Guarded so a sparse early snapshot never
+                                // wipes richer data already on screen (e.g. right after resume).
+                                if !update.topFiles.isEmpty {
+                                    self.filesByCategory = update.topFiles
+                                }
                             }
                         },
                         initialBuckets: resumeInitialBuckets,
@@ -329,7 +354,14 @@ final class ScanService: ObservableObject {
                     self.fileCounts = scanResult.fileCounts
                     self.lastScanDate = Date()
                     self.scanState = .complete  // Mark as complete scan
-                    
+
+                    // Without Full Disk Access the enumerator silently yields nothing for
+                    // protected areas, so surface an actionable advisory instead of just
+                    // showing an inexplicably small total.
+                    if !PermissionsChecker.hasFullDiskAccess() {
+                        self.accessWarning = "Full Disk Access isn't granted, so some files may be missing from this scan. Grant it in System Settings ▸ Privacy & Security ▸ Full Disk Access for complete results."
+                    }
+
                     // Calculate final elapsed time
                     let finalElapsed = self.getEffectiveElapsedTime()
                     
@@ -407,24 +439,26 @@ final class ScanService: ObservableObject {
     func saveCurrentProgress() {
         let summaryToSave = self.summary
         let filesToSave = self.filesByCategory
+        let countsToSave = self.fileCounts
         let progressToSave = self.progress
         let scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
         let currentScanState = self.scanState
-        
+
         // Update last scan date for partial saves too
         self.lastScanDate = Date()
-        
+
         Task.detached(priority: .background) {
             do {
                 try await ScanDataStore.shared.save(
                     summary: summaryToSave,
                     filesByCategory: filesToSave,
+                    fileCounts: countsToSave,
                     progress: progressToSave,
                     scanDuration: scanDuration,
                     scanState: currentScanState
                 )
             } catch {
-                print("Failed to save current progress: \(error)")
+                Log.cache.error("Failed to save current progress: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

@@ -5,15 +5,35 @@ import QuickLookThumbnailing
 // MARK: - Thumbnail Cache
 
 /// Global thumbnail cache for media items
-final class ThumbnailCache {
+final class ThumbnailCache: NSObject, NSCacheDelegate {
     static let shared = ThumbnailCache()
-    
+
     private let cache = NSCache<NSString, NSImage>()
     private let queue = DispatchQueue(label: "com.storageai.thumbnailcache", qos: .userInitiated, attributes: .concurrent)
-    
-    private init() {
+
+    // Real (approximate) live-item count, kept honest via insert/clear/eviction tracking so the
+    // dev Resource Monitor reports actual cache occupancy rather than a fabricated constant.
+    private let countLock = NSLock()
+    private var liveCount = 0
+
+    var approximateCount: Int {
+        countLock.lock(); defer { countLock.unlock() }
+        return liveCount
+    }
+
+    private func incrementCount() {
+        countLock.lock(); liveCount += 1; countLock.unlock()
+    }
+
+    private override init() {
+        super.init()
         cache.countLimit = 500
         cache.totalCostLimit = 100 * 1024 * 1024 // 100 MB
+        cache.delegate = self
+    }
+
+    func cache(_ cache: NSCache<AnyObject, AnyObject>, willEvictObject obj: Any) {
+        countLock.lock(); liveCount = max(0, liveCount - 1); countLock.unlock()
     }
     
     func thumbnail(for url: URL, size: CGSize) async -> NSImage? {
@@ -29,8 +49,9 @@ final class ThumbnailCache {
         
         if let thumbnail = thumbnail {
             cache.setObject(thumbnail, forKey: key)
+            incrementCount()
         }
-        
+
         return thumbnail
     }
     
@@ -83,6 +104,7 @@ final class ThumbnailCache {
     
     func clearCache() {
         cache.removeAllObjects()
+        countLock.lock(); liveCount = 0; countLock.unlock()
     }
 }
 

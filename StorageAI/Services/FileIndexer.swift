@@ -13,6 +13,10 @@ struct ScanUpdate {
     var phase: ScanPhase
     var buckets: [StorageCategory: Int64]
     var fileCounts: [StorageCategory: Int]  // File counts per category
+    /// Live snapshot of the largest files per category (sorted largest-first). Streaming this
+    /// during the scan keeps drill-down views populated even for cancelled/interrupted scans —
+    /// previously files only surfaced at completion, so partial scans had empty category views.
+    var topFiles: [StorageCategory: [FileEntry]]
 }
 
 /// Cancellation token for cooperative cancellation
@@ -173,13 +177,19 @@ enum FileIndexer {
         }
         
         func emitProgress(currentPath: String, phase: ScanPhase) {
+            // Snapshot the heaps (≤1000 entries × 6 categories, emitted at most ~1/sec — cheap).
+            var topFiles: [StorageCategory: [FileEntry]] = [:]
+            for (category, heap) in fileHeaps where !heap.files.isEmpty {
+                topFiles[category] = heap.files.sorted { $0.sizeBytes > $1.sizeBytes }
+            }
             progressCallback(ScanUpdate(
                 scannedFiles: scannedFiles,
                 scannedBytes: scannedBytes,
                 currentPath: currentPath,
                 phase: phase,
                 buckets: buckets,
-                fileCounts: categoryFileCounts
+                fileCounts: categoryFileCounts,
+                topFiles: topFiles
             ))
         }
         
@@ -234,20 +244,33 @@ enum FileIndexer {
                 var enumOptions: FileManager.DirectoryEnumerationOptions = []
                 if !shouldIncludeHidden { enumOptions.insert(.skipsHiddenFiles) }
                 
+                // Prefetch exactly the keys processBatch consumes so the enumerator caches them
+                // during the directory read — avoids a second per-file stat for every file.
                 let enumerator = FileManager.default.enumerator(
                     at: root,
-                    includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], // Minimal keys for fast traversal
+                    includingPropertiesForKeys: [
+                        .isRegularFileKey, .isDirectoryKey,
+                        .fileSizeKey, .totalFileAllocatedSizeKey, .contentModificationDateKey
+                    ],
                     options: enumOptions
                 )
-                
+
                 guard let fileEnum = enumerator else { continue }
-                
+
                 var batch: [URL] = []
                 batch.reserveCapacity(2000)
-                
-                for case let url as URL in fileEnum {
+
+                // Bound in-flight batches so a huge filesystem can't enqueue millions of pending
+                // tasks (each holding a 2000-URL array) before the pool drains them.
+                var inFlight = 0
+                let maxInFlight = max(2, ProcessInfo.processInfo.activeProcessorCount)
+
+                // Use nextObject() rather than for-in so we don't hold a non-Sendable enumerator
+                // iterator across the `await group.next()` suspension point below.
+                while let nextObject = fileEnum.nextObject() {
+                    guard let url = nextObject as? URL else { continue }
                     if cancellationToken.isCancelled { throw FileIndexerError.cancelled }
-                    
+
                     // Simple path checks (fast)
                     let path = url.path.lowercased()
                     // Skip exact excluded paths or prefixes efficiently
@@ -255,19 +278,24 @@ enum FileIndexer {
                         fileEnum.skipDescendants()
                         continue
                     }
-                    
+
                     if path.contains("/timemachine") || path.contains("/.spotlight-v100") || path.contains("/.trash") {
                         fileEnum.skipDescendants()
                         continue
                     }
-                    
+
                     batch.append(url)
-                    
+
                     if batch.count >= 2000 {
                         let batchToProcess = batch
                         batch = []
                         batch.reserveCapacity(2000)
-                        
+
+                        // Apply backpressure before enqueuing the next batch.
+                        if inFlight >= maxInFlight {
+                            _ = try await group.next()
+                            inFlight -= 1
+                        }
                         group.addTask {
                             if cancellationToken.isCancelled { return }
                             let result = processBatch(batchToProcess, classifier: classifier)
@@ -275,9 +303,10 @@ enum FileIndexer {
                                 await aggregator.add(result: result, phase: phase)
                             }
                         }
+                        inFlight += 1
                     }
                 }
-                
+
                 // Process remaining
                 if !batch.isEmpty {
                     let batchToProcess = batch
@@ -372,30 +401,43 @@ enum FileIndexer {
 
     static func sizeOfPath(_ url: URL, includeHidden: Bool = true) -> Int64 {
         var total: Int64 = 0
-        
+
         var enumOptions: FileManager.DirectoryEnumerationOptions = []
         if !includeHidden {
             enumOptions.insert(.skipsHiddenFiles)
         }
-        
+
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey,
+            .fileSizeKey,
+            .totalFileAllocatedSizeKey,
+            .fileResourceIdentifierKey
+        ]
+
+        // errorHandler: keep walking past unreadable subtrees instead of aborting the whole total.
         let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .totalFileAllocatedSizeKey
-            ],
-            options: enumOptions
+            includingPropertiesForKeys: keys,
+            options: enumOptions,
+            errorHandler: { _, _ in true }
         )
 
         guard let fileEnum = enumerator else { return 0 }
+
+        // Count each physical file once: hardlinks share a fileResourceIdentifier, so without
+        // this they'd be summed multiple times and overstate reclaimable space (common in
+        // Caches/Containers). NSMutableSet uses isEqual/hash on the identifier objects.
+        let seen = NSMutableSet()
+
         for case let fileURL as URL in fileEnum {
-            let values = try? fileURL.resourceValues(forKeys: [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .totalFileAllocatedSizeKey
-            ])
+            let values = try? fileURL.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true else { continue }
+
+            if let identifier = values?.fileResourceIdentifier as? NSObject {
+                if seen.contains(identifier) { continue }
+                seen.add(identifier)
+            }
+
             total += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
         }
         return total
@@ -458,16 +500,9 @@ struct StorageClassifier {
             return .documents
         }
         
-        // 3. Media
-        if path.hasPrefix(userMovies) || 
-           path.hasPrefix(userMusic) || 
-           path.hasPrefix(userPictures) ||
-           mediaExtensions.contains(pathExtension) {
-            return .media
-        }
-        
-        // 4. System
-        if path.hasPrefix("/system") || 
+        // 3. System — checked BEFORE media so a media-extension file under a system tree
+        //    (e.g. /System/.../x.png) is classified as system, not media.
+        if path.hasPrefix("/system") ||
            path.hasPrefix("/library") ||
            path.hasPrefix("/usr") ||
            path.hasPrefix("/bin") ||
@@ -475,7 +510,15 @@ struct StorageClassifier {
            path.hasPrefix("/private/var") {
             return .system
         }
-        
+
+        // 4. Media
+        if path.hasPrefix(userMovies) ||
+           path.hasPrefix(userMusic) ||
+           path.hasPrefix(userPictures) ||
+           mediaExtensions.contains(pathExtension) {
+            return .media
+        }
+
         // 5. Library/Caches (App Data)
         if path.hasPrefix(userLibrary) || 
            path.contains("/library/caches/") ||

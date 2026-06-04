@@ -105,25 +105,38 @@ final class MemoryPressureMonitor {
     
     // MARK: - Pressure Checking
     
+    /// Thread-safe read of the pressure flag (the flag is mutated under `lock` in the
+    /// dispatch-source handler, so all reads must take the lock too).
+    private var underPressure: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return isUnderPressure
+    }
+
+    /// Reset the pressure flag if the level has returned to normal (sync; takes the lock).
+    private func resetPressureIfNormal() {
+        lock.lock()
+        defer { lock.unlock() }
+        if pressureLevel == .normal {
+            isUnderPressure = false
+        }
+    }
+
     /// Check and wait if under memory pressure
     /// Use this in processing loops to pause when memory is low
     func checkAndWait() async {
-        while isUnderPressure {
+        while underPressure {
             // Wait 500ms before checking again
             try? await Task.sleep(nanoseconds: 500_000_000)
-            
+
             // Reset pressure flag - will be set again by the dispatch source if still under pressure
-            lock.lock()
-            if pressureLevel == .normal {
-                isUnderPressure = false
-            }
-            lock.unlock()
+            resetPressureIfNormal()
         }
     }
-    
+
     /// Check if we should pause processing (non-blocking)
     func shouldPause() -> Bool {
-        return isUnderPressure
+        return underPressure
     }
     
     // MARK: - Memory Info

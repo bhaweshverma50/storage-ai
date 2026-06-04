@@ -3,6 +3,7 @@ import Charts
 
 struct DashboardView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @State private var topApps: [AppEntry] = []
     @State private var cleanupTargets: [CleanupTarget] = []
     @State private var isLoadingApps = false
@@ -10,21 +11,27 @@ struct DashboardView: View {
     @State private var selectedNavItem: NavigationItem = .overview
     @State private var aiRecommendations: [String] = []
     @State private var isLoadingAI = false
+    @State private var aiUsedFallback = false  // true when AI was unavailable and we showed rule-based tips
+    // Owned here (not in ExplorerView) so the treemap survives tab switches and builds only once —
+    // otherwise revisiting the Explorer tab would recreate the view model and rebuild every time.
+    @StateObject private var explorerVM = ExplorerViewModel()
     
     enum NavigationItem: String, CaseIterable, Identifiable {
         case overview = "Overview"
         case categories = "Categories"
+        case explorer = "Explorer"
         case media = "Media"
         case applications = "Applications"
         case cleanup = "Cleanup"
         case settings = "Settings"
-        
+
         var id: String { rawValue }
-        
+
         var icon: String {
             switch self {
             case .overview: return "chart.pie"
             case .categories: return "folder"
+            case .explorer: return "square.grid.3x3.fill"
             case .media: return "photo.stack"
             case .applications: return "square.grid.2x2"
             case .cleanup: return "trash"
@@ -87,6 +94,8 @@ struct DashboardView: View {
                     }
                     .buttonStyle(.plain)
                     .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                    .accessibilityLabel(item.rawValue)
+                    .accessibilityAddTraits(selectedNavItem == item ? [.isButton, .isSelected] : [.isButton])
                 }
             }
             
@@ -173,6 +182,7 @@ struct DashboardView: View {
                     topApps: topApps,
                     aiRecommendations: aiRecommendations,
                     isLoadingAI: isLoadingAI,
+                    aiUsedFallback: aiUsedFallback,
                     onStartScan: startScan,
                     onCancelScan: { appState.scanService.cancelScan() },
                     onLoadAI: loadAIRecommendations
@@ -180,15 +190,32 @@ struct DashboardView: View {
                 .environmentObject(appState)
             case .categories:
                 CategoryDetailView()
+            case .explorer:
+                ExplorerView(vm: explorerVM)
+                    .environmentObject(appState)
             case .media:
                 MediaViewerView()
             case .applications:
-                AppDetailView(apps: topApps) { _ in
-                    // Refresh disk info when cleanup happens
-                    appState.scanService.refreshDiskInfo()
-                }
+                AppDetailView(
+                    apps: topApps,
+                    isRefreshing: isLoadingApps,
+                    onCleanup: { _ in
+                        // Refresh disk usage and reload the app list so removed/uninstalled apps disappear.
+                        appState.scanService.refreshDiskInfo()
+                        Task { await loadAppData() }
+                    },
+                    onRefresh: { Task { await loadAppData() } }
+                )
             case .cleanup:
-                CleanupView(targets: cleanupTargets, isLoading: isLoadingCleanup)
+                CleanupView(
+                    targets: cleanupTargets,
+                    isLoading: isLoadingCleanup,
+                    isScanning: appState.scanService.isScanning,
+                    onCleanupCompleted: {
+                        appState.scanService.refreshDiskInfo()
+                        await loadCleanupTargets()
+                    }
+                )
             case .settings:
                 SettingsView()
             }
@@ -197,14 +224,10 @@ struct DashboardView: View {
     
     // MARK: - Data Loading
     private func loadInitialData() async {
-        // Wait for cache to finish loading before checking summary
-        // This fixes race condition where loadInitialData runs before ScanService.loadCachedData completes
-        var waitCount = 0
-        while appState.scanService.isLoadingCache && waitCount < 50 {
-            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
-            waitCount += 1
-        }
-        
+        // Await the cache load rather than polling isLoadingCache for up to 2.5s — this can't
+        // time out before the cache is ready, and adds no artificial latency.
+        await appState.scanService.awaitCacheLoad()
+
         // Only load app data if we have cached scan data
         // This prevents permission popups on every app launch
         guard appState.scanService.summary.totalBytes > 0 else {
@@ -219,10 +242,13 @@ struct DashboardView: View {
                 }
                 // Also load cleanup targets in background
                 await loadCleanupTargets()
+                // Proactively load AI recommendations so they appear without hunting for the
+                // refresh button (only runs when AI is enabled).
+                loadAIRecommendations()
                 return
             }
         } catch {
-            print("Failed to load cached apps: \(error)")
+            Log.cache.error("Failed to load cached apps: \(error.localizedDescription, privacy: .public)")
         }
         
         // If no cached apps, compute fresh
@@ -232,25 +258,25 @@ struct DashboardView: View {
     private func loadAppData() async {
         isLoadingApps = true
         
-        let apps = await Task.detached {
-            AppAttribution.analyzeApps()
-                .sorted { $0.totalBytes > $1.totalBytes }
-                .prefix(50)
-                .map { $0 }
-        }.value
+        let apps = await AppAttribution.analyzeApps()
+            .sorted { $0.totalBytes > $1.totalBytes }
+            .prefix(50)
+            .map { $0 }
         
         // Save apps to cache
         do {
             try await ScanDataStore.shared.saveApps(Array(apps))
         } catch {
-            print("Failed to save apps cache: \(error)")
+            Log.cache.error("Failed to save apps cache: \(error.localizedDescription, privacy: .public)")
         }
         
         await loadCleanupTargets()
-        
+
         await MainActor.run {
             topApps = Array(apps)
             isLoadingApps = false
+            // Refresh AI recommendations against the new data (covers first load + post-scan).
+            loadAIRecommendations()
         }
     }
     
@@ -272,69 +298,69 @@ struct DashboardView: View {
     }
     
     private func startScan() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        
-        // Scan the entire home directory to capture all user data
-        var roots = [
-            home,  // Full home directory captures everything including hidden folders, dev tools, etc.
-            URL(fileURLWithPath: "/Applications")
-        ]
-        
-        // Add developer directories that are often outside home
-        let developerPaths = [
-            "/opt/homebrew",           // Homebrew on Apple Silicon
-            "/usr/local",              // Homebrew on Intel Macs
-            "/opt/local"               // MacPorts
-        ]
-        for path in developerPaths {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: url.path) {
-                roots.append(url)
-            }
-        }
-        
-        if appState.settings.includeSystem {
-            roots.append(URL(fileURLWithPath: "/System"))
-            roots.append(URL(fileURLWithPath: "/Library"))
-            roots.append(URL(fileURLWithPath: "/private/var"))
-        }
-        
-        roots = roots.filter { FileManager.default.fileExists(atPath: $0.path) }
-        appState.scanService.startScan(settings: appState.settings, roots: roots)
+        appState.scanService.startScan(settings: appState.settings,
+                                       roots: ScanRootsBuilder.roots(settings: appState.settings))
     }
     
     private func loadAIRecommendations() {
-        guard appState.settings.ollamaEnabled else { return }
-        
+        // Only run when AI is enabled, not already loading, and there's scan data to analyze.
+        guard appState.settings.ollamaEnabled, !isLoadingAI else { return }
+        guard appState.scanService.summary.totalBytes > 0 else { return }
+
         isLoadingAI = true
-        
+
         Task {
             let summary = appState.scanService.summary
+            // Ground the model in the actual reclaimable candidates (cleanup targets) so its
+            // tips reference things that really exist and that the app can act on, rather than
+            // generic advice derived from totals alone.
+            let reclaimable = cleanupTargets
+                .filter { $0.estimatedBytes > 0 }
+                .prefix(6)
+                .map { "- \($0.title): \(Formatters.bytes($0.estimatedBytes)) reclaimable" }
+                .joined(separator: "\n")
+
             let prompt = """
-            Analyze this Mac storage data and provide 3-4 specific, actionable cleanup recommendations:
-            
+            Analyze this Mac storage data and provide 3-4 specific, actionable cleanup recommendations.
+            Only recommend things supported by the data below; do not invent files or apps.
+
             Total scanned: \(Formatters.bytes(summary.totalBytes))
             Categories:
             \(summary.buckets.map { "- \($0.category.displayName): \(Formatters.bytes($0.bytes))" }.joined(separator: "\n"))
-            
+
             Top apps by size:
             \(topApps.prefix(5).map { "- \($0.name): \(Formatters.bytes($0.totalBytes))" }.joined(separator: "\n"))
-            
-            Give brief, actionable tips. Format as a simple bullet list without explanations.
+
+            Reclaimable cleanup targets:
+            \(reclaimable.isEmpty ? "- (none detected yet)" : reclaimable)
+
+            Give brief, actionable tips, prioritizing the largest safe space savings. Format as a simple bullet list without explanations.
             """
             
-            if let response = await Recommendations.llmSummary(prompt: prompt) {
+            if let response = await Recommendations.llmSummary(prompt: prompt, model: appState.settings.ollamaModel) {
+                let parsed = response
+                    .components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    // Strip bullets AND numbered prefixes ("1." / "2)") that small models emit.
+                    .map { $0.replacingOccurrences(of: "^\\s*(?:[-•*]|\\d+[.)])\\s*", with: "", options: .regularExpression) }
+                    .filter { !$0.isEmpty }
                 await MainActor.run {
-                    aiRecommendations = response
-                        .components(separatedBy: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
-                        .map { $0.replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression) }
+                    if parsed.isEmpty {
+                        // Model returned nothing usable — fall back rather than show an empty card.
+                        aiRecommendations = Recommendations.ruleBased(summary: summary, topApps: topApps)
+                        aiUsedFallback = true
+                    } else {
+                        aiRecommendations = parsed
+                        aiUsedFallback = false
+                    }
                     isLoadingAI = false
                 }
             } else {
+                // Ollama unreachable / model missing / disabled mid-flight — show basic tips and say so.
                 await MainActor.run {
                     aiRecommendations = Recommendations.ruleBased(summary: summary, topApps: topApps)
+                    aiUsedFallback = true
                     isLoadingAI = false
                 }
             }
@@ -376,11 +402,13 @@ struct DiskProgressBar: View {
 // MARK: - Overview View (Bento Box Layout)
 struct OverviewView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
     @Environment(\.accentTheme) private var accentTheme
     @Environment(\.fontScale) private var fontScale
     let topApps: [AppEntry]
     let aiRecommendations: [String]
     let isLoadingAI: Bool
+    let aiUsedFallback: Bool
     let onStartScan: () -> Void
     let onCancelScan: () -> Void
     let onLoadAI: () -> Void
@@ -403,6 +431,11 @@ struct OverviewView: View {
                     // Error
                     if let error = appState.scanService.lastError {
                         errorBanner(error)
+                    }
+
+                    // Access advisory (non-fatal): scan likely under-reported without Full Disk Access
+                    if let warning = appState.scanService.accessWarning {
+                        accessWarningBanner(warning)
                     }
                     
                     // Bento Grid
@@ -477,13 +510,33 @@ struct OverviewView: View {
         .background(Color.red.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
+
+    private func accessWarningBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lock.shield")
+            Text(message)
+            Spacer()
+            Button("Open Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .font(.caption.weight(.medium))
+            .buttonStyle(.plain)
+            .foregroundStyle(.orange)
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .padding(12)
+        .background(Color.orange.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
     
     // MARK: - Bento Grid Layout
     private func bentoGrid(width: CGFloat) -> some View {
         let spacing: CGFloat = 16
         let halfWidth = (width - spacing) / 2
-        let thirdWidth = (width - spacing * 2) / 3
-        
+
         return VStack(spacing: spacing) {
             // Row 1: Chart + Categories
             HStack(spacing: spacing) {
@@ -516,7 +569,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 240)
+                .frame(width: halfWidth, height: 240 * fontScale)
                 
                 // Categories
                 BentoCard {
@@ -555,7 +608,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 240)
+                .frame(width: halfWidth, height: 240 * fontScale)
             }
             
             // Row 2: Recommendations + Top Apps
@@ -580,6 +633,7 @@ struct OverviewView: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(.secondary)
                                 .disabled(isLoadingAI)
+                                .accessibilityLabel(isLoadingAI ? "Refreshing recommendations" : "Refresh recommendations")
                             }
                         }
                         
@@ -595,10 +649,22 @@ struct OverviewView: View {
                             }
                             Spacer()
                         } else {
-                            let recs = aiRecommendations.isEmpty 
+                            let recs = aiRecommendations.isEmpty
                                 ? Recommendations.ruleBased(summary: appState.scanService.summary, topApps: topApps)
                                 : aiRecommendations
-                            
+
+                            if aiUsedFallback {
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10 * fontScale))
+                                        .foregroundStyle(.orange)
+                                    Text("AI unavailable — showing basic tips. Check Ollama in Settings.")
+                                        .font(.system(size: 10 * fontScale))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
                             if recs.isEmpty {
                                 Spacer()
                                 Text("Run a scan to get recommendations")
@@ -640,7 +706,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 200)
+                .frame(width: halfWidth, height: 200 * fontScale)
                 
                 // Top Apps
                 BentoCard {
@@ -675,7 +741,7 @@ struct OverviewView: View {
                         }
                     }
                 }
-                .frame(width: halfWidth, height: 200)
+                .frame(width: halfWidth, height: 200 * fontScale)
             }
         }
     }
@@ -781,7 +847,10 @@ struct CompactAppRow: View {
 }
 
 #Preview {
-    DashboardView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return DashboardView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 1000, height: 700)
 }

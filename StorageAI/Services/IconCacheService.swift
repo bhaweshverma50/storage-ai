@@ -11,25 +11,30 @@ actor IconCacheService {
         return cache
     }()
     
-    /// Get icon for a file path, checking cache first
-    func icon(for path: String) -> NSImage {
+    /// Get icon for a file path, checking cache first.
+    /// The (potentially slow, disk-touching) NSWorkspace lookup runs on a detached task so
+    /// concurrent requests don't serialize behind one another on the actor's single executor;
+    /// the actor only guards the cache map.
+    func icon(for path: String) async -> NSImage {
         let key = path as NSString
-        
-        // Return cached if available
+
         if let cached = cache.object(forKey: key) {
             return cached
         }
-        
-        // Generate new icon (this happens on the actor's thread, background)
-        let icon = NSWorkspace.shared.icon(forFile: path)
+
+        let icon = await Task.detached(priority: .utility) {
+            NSWorkspace.shared.icon(forFile: path)
+        }.value
         cache.setObject(icon, forKey: key)
         return icon
     }
-    
-    /// Pre-warm cache for a list of paths
-    func prewarm(paths: [String]) {
-        for path in paths {
-            let _ = icon(for: path)
+
+    /// Pre-warm cache for a list of paths concurrently (bounded by the cooperative pool).
+    func prewarm(paths: [String]) async {
+        await withTaskGroup(of: Void.self) { group in
+            for path in paths {
+                group.addTask { _ = await self.icon(for: path) }
+            }
         }
     }
 }

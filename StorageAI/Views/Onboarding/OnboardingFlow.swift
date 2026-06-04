@@ -3,6 +3,7 @@ import AppKit
 
 struct OnboardingFlow: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var ollamaSetupService: OllamaSetupService  // observe AI setup state directly (STATE-4)
     @State private var currentStep = 0
     @State private var fullDiskAccessGranted = false
     @State private var hasCheckedAccess = false
@@ -417,7 +418,9 @@ struct OnboardingFlow: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(currentStep == 1 && !fullDiskAccessGranted && hasCheckedAccess)
+            // Don't trap the user on the Full Disk Access step: granting it typically needs an
+            // app relaunch (so re-checking keeps returning false this session), and the app works
+            // without it — scans just show an advisory when access is missing.
         }
         .padding(32)
         .background(.ultraThinMaterial)
@@ -456,7 +459,9 @@ private func openPrivacyPane(_ pane: String) {
 }
 
 #Preview {
-    OnboardingFlow()
-        .environmentObject(AppState())
+    let state = AppState()
+    return OnboardingFlow()
+        .environmentObject(state)
+        .environmentObject(state.ollamaSetupService)
         .frame(width: 900, height: 600)
 }

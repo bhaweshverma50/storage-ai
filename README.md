@@ -8,7 +8,7 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-Native-purple?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.12.1-brightgreen?style=for-the-badge)](../../releases/latest)
+[![Version](https://img.shields.io/badge/Version-2.13.0-brightgreen?style=for-the-badge)](../../releases/latest)
 
 <br/>
 
@@ -28,6 +28,17 @@
 <tr>
 <td width="50%">
 
+### 🗺 Treemap Explorer
+- **GrandPerspective-style treemap** of your whole disk
+- **Drill down** into any folder with breadcrumbs
+- **Hover** for details, right-click to Reveal or Trash
+- **Color-coded** — stable folder hues + 12 file-type colors
+- **Fast & lean** — one ~30s walk, lazy levels, tiny footprint
+- **Open any folder** to map just that subtree
+
+</td>
+<td width="50%">
+
 ### 🔍 Smart Scanning
 - **Lightning-fast** file system analysis
 - **Intelligent categorization** into 6 categories
@@ -37,6 +48,8 @@
 - **Auto-save** - progress saved every 60 seconds
 
 </td>
+</tr>
+<tr>
 <td width="50%">
 
 ### 🎨 Beautiful Interface
@@ -47,8 +60,6 @@
 - **Menu bar extra** - quick disk status at a glance
 
 </td>
-</tr>
-<tr>
 <td width="50%">
 
 ### 🧹 Cleanup Tools
@@ -60,73 +71,86 @@
 - **App-specific cleanup** - clean cache, data, or uninstall
 
 </td>
+</tr>
+<tr>
 <td width="50%">
 
 ### 🤖 AI-Powered (Optional)
 - **Auto-setup Ollama** on first launch
 - **Local Ollama** integration
-- **Smart recommendations** for what to delete
+- **Grounded recommendations** based on your actual scan
 - **Privacy-first** - all processing stays on device
 - **Works offline** - no cloud dependency
+
+</td>
+<td width="50%">
+
+### 🛡 Safe by Design
+- **Never permanently deletes** — everything goes to Trash
+- **Safety allowlists** refuse system paths & volume roots
+- **Honest reporting** — real freed sizes and failure reasons
+- **Stable signing** — permissions persist across updates
+- **Skips Photos/Music libraries** — app-managed media untouched
 
 </td>
 </tr>
 </table>
 
-## 🆕 What's New in v2.4.0
+## 🆕 What's New in v2.13.0
 
-- **🧹 App Cleanup Actions** - Clean cache, remove app data, or uninstall apps directly from app details
-- **👆 Clickable App Rows** - Click anywhere on an application row to see details
-- **🎨 Custom App Icon** - Beautiful new app icon for Storage AI
-- **⚡ Auto Ollama Setup** - Automatic download, install, and model setup for AI features
-- **🔧 Bug Fixes** - Fixed applications and cleanup data loading from cache on restart
-- **⏱️ Time Estimation** - See estimated time remaining during scans
-- **📊 Live File Counts** - Real-time file counts per category while scanning
-- **⏸️ Pause & Resume** - Stop scans and continue where you left off
-- **💾 Auto-Save Progress** - Scan progress saved automatically every 60 seconds
-- **🖥️ Menu Bar Extra** - Quick access to disk usage from the menu bar
+- **🗺 Treemap Explorer** - GrandPerspective-style visual map of your disk with drill-down, hover info, Reveal in Finder, and Move to Trash
+- **🎨 Color-coded everything** - stable per-folder hues plus 12 file-type colors (now incl. Design, Data, Disk Images, Fonts)
+- **📊 Live category drill-down** - file lists fill in *during* scans and survive interrupted scans
+- **🗑 Honest deletes** - real freed-space numbers (no more "Zero KB"), failure reasons, and an apps-list Refresh button
+- **🔐 Permissions that stick** - stable code signing means macOS stops re-asking for folder access after every update
+- **🎵 Media-library safe** - analysis skips Photos/Music libraries, eliminating the Apple Music permission prompt
+- **🛠 66-finding deep review** - security, performance, state-management, and accessibility fixes across the app, backed by 46 unit tests
+
+See the full [CHANGELOG](CHANGELOG.md) for details.
 
 ## 📸 Screenshots
 
 <div align="center">
 
-### Categories View
-<img src="dmg-assets/screenshots/categories-view.png" width="800" alt="Categories View">
+### Treemap Explorer
+<img src="dmg-assets/screenshots/explorer-drilldown.gif" width="800" alt="Treemap Explorer drill-down">
 
-*Drill down into each storage category to see detailed file breakdowns.*
-
----
-
-### Cleanup View
-<img src="dmg-assets/screenshots/applications-view.png" width="800" alt="Applications View">
-
-*Identify and clean up caches, logs, Xcode data, and other recoverable space.*
+*One picture of your whole disk — bigger tile = more space. Click folders to drill in, hover for details.*
 
 ---
 
-### Overview
-<img src="dmg-assets/screenshots/app-detail-sheet.png" width="800" alt="App Details Sheet">
+### Storage Overview
+<img src="dmg-assets/screenshots/overview.png" width="800" alt="Storage Overview">
 
-*Quick access to disk usage and storage breakdown and everything else here*
-
----
-
-### Settings View
-<img src="dmg-assets/screenshots/cleanup-view.png" width="800" alt="Cleanup View">
-
-*Customize themes, font sizes, and configure AI-powered recommendations with Ollama.*
+*Disk usage at a glance with AI-powered recommendations and your largest apps.*
 
 ---
 
-### AI Options
-<img src="dmg-assets/screenshots/settings-view.png" width="800" alt="Settings View">
+### Categories
+<img src="dmg-assets/screenshots/categories.png" width="800" alt="Categories View">
+
+*Six storage categories with live file counts — click any card for the file-level breakdown.*
 
 ---
 
-### Application details
-<img src="dmg-assets/screenshots/menubar-extra.png" width="400" alt="Menu Bar Extra">
+### Applications
+<img src="dmg-assets/screenshots/applications.png" width="800" alt="Applications View">
 
-*Click any app to see detailed storage breakdown and cleanup options - clean cache, remove data, or uninstall.*
+*Every app with its bundle, cache, and data sizes — clean caches, remove app data, or uninstall.*
+
+---
+
+### Cleanup
+<img src="dmg-assets/screenshots/cleanup.png" width="800" alt="Cleanup View">
+
+*Safe, one-click cleanup targets with size estimates — everything goes to the Trash, nothing is permanently deleted.*
+
+---
+
+### Settings
+<img src="dmg-assets/screenshots/settings.png" width="800" alt="Settings View">
+
+*Themes, font sizes, scan locations, and local AI configuration with Ollama.*
 
 ---
 
@@ -145,11 +169,15 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/storage-ai.git
+git clone https://github.com/bhaweshverma50/storage-ai.git
 cd storage-ai
 
 # Build release version
 swift build -c release
+
+# Build + sign + install straight into /Applications (recommended for local use —
+# signs with your certificate so macOS permission grants persist across rebuilds)
+./scripts/dev-install.sh
 
 # Or create a DMG installer
 ./scripts/create-dmg.sh
@@ -208,11 +236,15 @@ StorageAI/
 │   ├── ScanService.swift     # Scan orchestration
 │   ├── FileIndexer.swift     # File system traversal
 │   ├── ScanDataStore.swift   # Persistence layer
-│   ├── CleanupService.swift  # Cleanup operations
+│   ├── CleanupService.swift  # Cleanup target discovery
+│   ├── DeleteEngine.swift    # Trash-only deletes with safety allowlists
+│   ├── FileTreeBuilder.swift # Treemap size index (lazy, memory-bounded)
+│   ├── TreemapLayout.swift   # Squarified treemap algorithm
 │   ├── OllamaClient.swift    # AI integration
 │   └── OllamaSetupService.swift # Auto AI setup
 └── Views/
     ├── DashboardView.swift   # Main interface
+    ├── ExplorerView.swift    # Treemap canvas & interactions
     ├── CategoryDetailView.swift
     ├── AppDetailView.swift   # App details & cleanup
     ├── CleanupView.swift

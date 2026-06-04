@@ -9,8 +9,11 @@ struct StorageAIApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(appState)
+                .environmentObject(appState.scanService)
+                .environmentObject(appState.ollamaSetupService)
                 .preferredColorScheme(appState.effectiveColorScheme)
                 .tint(appState.colorTheme.accentColor)
+                .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
                 .onAppear {
                     // Connect appState to delegate for termination handling
                     appDelegate.appState = appState
@@ -37,37 +40,26 @@ struct StorageAIApp: App {
             }
         }
         
-        // Menu Bar Extra
+        // Menu Bar Extra — .window style so the custom layout (progress bars, hover buttons,
+        // fixed-width VStack) renders/interacts correctly instead of as plain menu items.
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(appState)
+                .environmentObject(appState.scanService)
+                .environmentObject(appState.ollamaSetupService)
+                .environment(\.accentTheme, appState.colorTheme.accentColor)
+                .environment(\.fontScale, appState.fontSize.scale)
+                .dynamicTypeSize(appState.fontSize.dynamicTypeSize)
+                .preferredColorScheme(appState.effectiveColorScheme)
         } label: {
             Image(systemName: "externaldrive")
         }
+        .menuBarExtraStyle(.window)
     }
     
     private func startScan() {
-        var roots = [
-            FileManager.default.homeDirectoryForCurrentUser,
-            URL(fileURLWithPath: "/Applications")
-        ]
-        
-        // Add developer directories
-        let developerPaths = ["/opt/homebrew", "/usr/local", "/opt/local"]
-        for path in developerPaths {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: url.path) {
-                roots.append(url)
-            }
-        }
-        
-        if appState.settings.includeSystem {
-            roots.append(URL(fileURLWithPath: "/System"))
-            roots.append(URL(fileURLWithPath: "/Library"))
-            roots.append(URL(fileURLWithPath: "/private/var"))
-        }
-        
-        appState.scanService.startScan(settings: appState.settings, roots: roots)
+        appState.scanService.startScan(settings: appState.settings,
+                                       roots: ScanRootsBuilder.roots(settings: appState.settings))
     }
 }
 
@@ -78,29 +70,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false // Keep app running in menu bar when window is closed
     }
-    
-    func applicationWillTerminate(_ notification: Notification) {
-        // Save scan progress when app is about to quit
-        if let scanService = appState?.scanService, scanService.summary.totalBytes > 0 {
-            // Perform synchronous save since we're terminating
-            let semaphore = DispatchSemaphore(value: 0)
-            Task {
-                await MainActor.run {
-                    scanService.saveCurrentProgress()
-                }
-                // Give a moment for the save to complete
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-                semaphore.signal()
+
+    // Since we keep running with no window, reopen the main window when the user clicks the
+    // Dock icon — otherwise clicking it does nothing (a confusing dead-end).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            for window in sender.windows where !window.isVisible {
+                window.makeKeyAndOrderFront(self)
             }
-            _ = semaphore.wait(timeout: .now() + 1.0)
+            sender.activate(ignoringOtherApps: true)
         }
+        return true
+    }
+    
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        // Persist scan progress on quit. applicationWillTerminate runs on the main thread, so we
+        // snapshot the (MainActor) state here, then perform the actual write in a detached task
+        // and block ONLY until that write completes. Previously the wait blocked the main thread
+        // while the save task tried to hop back onto MainActor — a deadlock that timed out before
+        // the save ran, and the save was fire-and-forget anyway.
+        guard let scanService = appState?.scanService, scanService.summary.totalBytes > 0 else { return }
+
+        let summary = scanService.summary
+        let files = scanService.filesByCategory
+        let counts = scanService.fileCounts
+        let progress = scanService.progress
+        let state = scanService.scanState
+        let duration = progress.elapsedSeconds
+
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            try? await ScanDataStore.shared.save(
+                summary: summary,
+                filesByCategory: files,
+                fileCounts: counts,
+                progress: progress,
+                scanDuration: duration,
+                scanState: state
+            )
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 3.0)
     }
 }
 
 // MARK: - Menu Bar View
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
-    
+    @EnvironmentObject private var scanService: ScanService  // observe scan updates directly (STATE-4)
+
     private let labelWidth: CGFloat = 70
     
     var body: some View {
@@ -229,27 +248,8 @@ struct MenuBarView: View {
     }
     
     private func startScan() {
-        var roots = [
-            FileManager.default.homeDirectoryForCurrentUser,
-            URL(fileURLWithPath: "/Applications")
-        ]
-        
-        // Add developer directories
-        let developerPaths = ["/opt/homebrew", "/usr/local", "/opt/local"]
-        for path in developerPaths {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: url.path) {
-                roots.append(url)
-            }
-        }
-        
-        if appState.settings.includeSystem {
-            roots.append(URL(fileURLWithPath: "/System"))
-            roots.append(URL(fileURLWithPath: "/Library"))
-            roots.append(URL(fileURLWithPath: "/private/var"))
-        }
-        
-        appState.scanService.startScan(settings: appState.settings, roots: roots)
+        appState.scanService.startScan(settings: appState.settings,
+                                       roots: ScanRootsBuilder.roots(settings: appState.settings))
     }
 }
 
@@ -384,7 +384,10 @@ struct RootView: View {
 }
 
 #Preview("App") {
-    RootView()
-        .environmentObject(AppState())
+    let state = AppState()
+    return RootView()
+        .environmentObject(state)
+        .environmentObject(state.scanService)
+        .environmentObject(state.ollamaSetupService)
         .environment(\.accentTheme, .blue)
 }

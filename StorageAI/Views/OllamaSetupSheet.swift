@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OllamaSetupSheet: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var ollamaSetupService: OllamaSetupService  // observe AI setup state directly (STATE-4)
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accentTheme) private var accentTheme
     
@@ -411,6 +412,8 @@ struct OllamaSetupSheet: View {
 }
 
 #Preview {
-    OllamaSetupSheet()
-        .environmentObject(AppState())
+    let state = AppState()
+    return OllamaSetupSheet()
+        .environmentObject(state)
+        .environmentObject(state.ollamaSetupService)
 }

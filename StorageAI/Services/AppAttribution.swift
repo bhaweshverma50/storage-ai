@@ -157,39 +157,54 @@ enum AppAttribution {
         return orphanedApps
     }
 
-    static func analyzeApps() -> [AppEntry] {
+    /// Compute the full AppEntry (bundle + support/cache/container sizes) for one app bundle.
+    /// Each call does several recursive directory walks, so callers run these concurrently.
+    private static func makeAppEntry(for appURL: URL) -> AppEntry {
+        let bundle = Bundle(url: appURL)
+        let name = bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? appURL.deletingPathExtension().lastPathComponent
+        let bundleId = bundle?.bundleIdentifier
+
+        let supportPaths = relatedSupportPaths(appName: name, bundleId: bundleId)
+        let bundleSize = FileIndexer.sizeOfPath(appURL)
+        let supportSize = supportPaths.support.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
+        let cacheSize = supportPaths.caches.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
+        let containerSize = supportPaths.containers.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
+
+        return AppEntry(
+            name: name,
+            bundleIdentifier: bundleId,
+            bundleURL: appURL,
+            bundleSizeBytes: bundleSize,
+            supportSizeBytes: supportSize,
+            cacheSizeBytes: cacheSize,
+            containerSizeBytes: containerSize
+        )
+    }
+
+    static func analyzeApps() async -> [AppEntry] {
+        // Analyze discovered .app bundles concurrently (the cooperative pool bounds parallelism)
+        // instead of walking each app's gigabytes serially.
+        let apps = discoverApps()
+        let bundleEntries: [AppEntry] = await withTaskGroup(of: AppEntry.self) { group in
+            for appURL in apps {
+                group.addTask { makeAppEntry(for: appURL) }
+            }
+            var result: [AppEntry] = []
+            for await entry in group {
+                if Task.isCancelled { break }
+                result.append(entry)
+            }
+            return result
+        }
+
         var allApps: [AppEntry] = []
         var seenIdentifiers: Set<String> = []
-        
-        // First, analyze discovered .app bundles
-        let apps = discoverApps()
-        for appURL in apps {
-            let bundle = Bundle(url: appURL)
-            let name = bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? appURL.deletingPathExtension().lastPathComponent
-            let bundleId = bundle?.bundleIdentifier
-            
-            if let id = bundleId {
-                seenIdentifiers.insert(id.lowercased())
-            }
-            seenIdentifiers.insert(name.lowercased())
-
-            let supportPaths = relatedSupportPaths(appName: name, bundleId: bundleId)
-            let bundleSize = FileIndexer.sizeOfPath(appURL)
-            let supportSize = supportPaths.support.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
-            let cacheSize = supportPaths.caches.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
-            let containerSize = supportPaths.containers.reduce(0) { $0 + FileIndexer.sizeOfPath($1) }
-
-            allApps.append(AppEntry(
-                name: name,
-                bundleIdentifier: bundleId,
-                bundleURL: appURL,
-                bundleSizeBytes: bundleSize,
-                supportSizeBytes: supportSize,
-                cacheSizeBytes: cacheSize,
-                containerSizeBytes: containerSize
-            ))
+        for entry in bundleEntries {
+            if let id = entry.bundleIdentifier { seenIdentifiers.insert(id.lowercased()) }
+            seenIdentifiers.insert(entry.name.lowercased())
+            allApps.append(entry)
         }
-        
+
         // Then, add orphaned app data that doesn't have a corresponding .app bundle
         let orphanedApps = discoverOrphanedAppData()
         for app in orphanedApps {
@@ -198,11 +213,11 @@ enum AppAttribution {
                 allApps.append(app)
             }
         }
-        
+
         return allApps
     }
 
-    private static func relatedSupportPaths(appName: String, bundleId: String?) -> (support: [URL], caches: [URL], containers: [URL]) {
+    static func relatedSupportPaths(appName: String, bundleId: String?) -> (support: [URL], caches: [URL], containers: [URL]) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var support: [URL] = []
         var caches: [URL] = []

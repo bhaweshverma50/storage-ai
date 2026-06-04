@@ -6,34 +6,37 @@ actor ScanDataStore {
     static let shared = ScanDataStore()
     
     private let fileManager = FileManager.default
-    private var cacheDirectory: URL {
-        let paths = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
+
+    // These are pure path computations (no mutable actor state), so they're nonisolated and
+    // safe to use from the synchronous init and any context.
+    private nonisolated var cacheDirectory: URL {
+        let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
         return paths[0].appendingPathComponent("com.storageai.app", isDirectory: true)
     }
-    
-    private var scanDataURL: URL {
+
+    private nonisolated var scanDataURL: URL {
         cacheDirectory.appendingPathComponent("scan_data.json")
     }
-    
-    private var metadataURL: URL {
+
+    private nonisolated var metadataURL: URL {
         cacheDirectory.appendingPathComponent("metadata.json")
     }
-    
-    private var appsDataURL: URL {
+
+    private nonisolated var appsDataURL: URL {
         cacheDirectory.appendingPathComponent("apps_data.json")
     }
-    
-    private var performanceHistoryURL: URL {
+
+    private nonisolated var performanceHistoryURL: URL {
         cacheDirectory.appendingPathComponent("performance_history.json")
     }
-    
-    private var mediaAnalysisURL: URL {
+
+    private nonisolated var mediaAnalysisURL: URL {
         cacheDirectory.appendingPathComponent("media_analysis.json")
     }
-    
+
     private init() {
         // Ensure cache directory exists
-        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
     
     // MARK: - Persistence Models
@@ -93,16 +96,19 @@ actor ScanDataStore {
     func save(
         summary: StorageSummary,
         filesByCategory: [StorageCategory: [FileEntry]],
+        fileCounts: [StorageCategory: Int] = [:],
         progress: ScanProgress,
         scanDuration: TimeInterval,
         scanState: ScanState = .complete
     ) async throws {
-        // Convert to persisted format
+        // Persist the REAL per-category file count (tracked live during the scan), not just the
+        // top-N file list's count — the list is empty until a scan completes, so deriving the
+        // count from it made interrupted scans persist 0 files per category.
         let buckets = summary.buckets.map { bucket in
             PersistedScanData.PersistedBucket(
                 category: bucket.category.rawValue,
                 bytes: bucket.bytes,
-                fileCount: filesByCategory[bucket.category]?.count ?? 0
+                fileCount: fileCounts[bucket.category] ?? filesByCategory[bucket.category]?.count ?? 0
             )
         }
         
@@ -140,16 +146,16 @@ actor ScanDataStore {
             scanState: scanState
         )
         
-        // Write to disk
+        // Write to disk. This is a machine-only cache, so skip pretty-printing (smaller/faster)
+        // and write atomically so a crash mid-write can't leave a torn, undecodable file.
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
-        
+
         let scanDataJSON = try encoder.encode(scanData)
-        try scanDataJSON.write(to: scanDataURL)
-        
+        try scanDataJSON.write(to: scanDataURL, options: .atomic)
+
         let metadataJSON = try encoder.encode(metadata)
-        try metadataJSON.write(to: metadataURL)
+        try metadataJSON.write(to: metadataURL, options: .atomic)
     }
     
     // MARK: - Load
@@ -162,12 +168,19 @@ actor ScanDataStore {
         
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        
-        let scanDataJSON = try Data(contentsOf: scanDataURL)
-        let scanData = try decoder.decode(PersistedScanData.self, from: scanDataJSON)
-        
-        let metadataJSON = try Data(contentsOf: metadataURL)
-        let metadata = try decoder.decode(ScanMetadata.self, from: metadataJSON)
+
+        let scanData: PersistedScanData
+        let metadata: ScanMetadata
+        do {
+            scanData = try decoder.decode(PersistedScanData.self, from: Data(contentsOf: scanDataURL))
+            metadata = try decoder.decode(ScanMetadata.self, from: Data(contentsOf: metadataURL))
+        } catch {
+            // Cache is corrupt or from an incompatible schema (e.g. after an app update). Clear it
+            // and fall back to a fresh scan instead of repeatedly failing to load.
+            try? fileManager.removeItem(at: scanDataURL)
+            try? fileManager.removeItem(at: metadataURL)
+            return nil
+        }
         
         // Convert back to app models and extract file counts
         var fileCounts: [StorageCategory: Int] = [:]

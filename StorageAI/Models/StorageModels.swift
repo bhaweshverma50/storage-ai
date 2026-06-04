@@ -63,7 +63,10 @@ enum StorageCategory: String, CaseIterable, Identifiable {
 }
 
 struct StorageBucket: Identifiable {
-    let id = UUID()
+    // Identity derives from the category (the natural stable key) so SwiftUI diffs the same
+    // six rows across scan-progress ticks instead of tearing them down and rebuilding
+    // (which dropped animations and reset scroll/hover state every update).
+    var id: StorageCategory { category }
     let category: StorageCategory
     var bytes: Int64
     
