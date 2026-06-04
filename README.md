@@ -1,8 +1,10 @@
 <div align="center">
 
+<img src="dmg-assets/icon.png" width="128" alt="SpaceLens app icon — a magnifying lens over a treemap">
+
 # SpaceLens
 
-### Intelligent Disk Space Analyzer for macOS
+### See where your space went — and take it back
 
 [![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue?style=for-the-badge&logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
@@ -14,7 +16,7 @@
 
 **SpaceLens** is a beautiful, native macOS app that helps you understand and reclaim your disk space. Powered by intelligent file categorization and optional local AI recommendations via Ollama.
 
-[Download Latest Release](../../releases/latest) · [Report Bug](../../issues) · [Request Feature](../../issues)
+[Download Latest Release](../../releases/latest) · [Read the engineering write-up](https://bhaweshv.vercel.app/post/mapping-a-million-files) · [Report Bug](../../issues) · [Request Feature](../../issues)
 
 <br/>
 
