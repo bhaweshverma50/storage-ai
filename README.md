@@ -16,7 +16,7 @@
 
 **SpaceLens** is a beautiful, native macOS app that helps you understand and reclaim your disk space. Powered by intelligent file categorization and optional local AI recommendations via Ollama.
 
-[Download Latest Release](../../releases/latest) · [Read the engineering write-up](https://bhaweshv.vercel.app/post/mapping-a-million-files) · [Report Bug](../../issues) · [Request Feature](../../issues)
+[Download Latest Release](../../releases/latest) · [Read the engineering write-up](https://bhaweshv.vercel.app/#/post/mapping-a-million-files) · [Report Bug](../../issues) · [Request Feature](../../issues)
 
 <br/>
 
