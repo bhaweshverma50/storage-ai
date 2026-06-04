@@ -1,6 +1,16 @@
 # Changelog
 
-All notable changes to Storage AI are documented here.
+All notable changes to SpaceLens are documented here.
+
+## [2.14.0] — 2026-06-04
+
+### ✨ Rebrand: Storage AI is now SpaceLens
+
+- **New name, same mission**: *see where your space went — and take it back.*
+- **New app icon**: a magnifying lens over the treemap — the product in one glyph.
+- Bundle identifier moved to `com.spacelens.app` (macOS will re-ask for permissions
+  once after updating; grants then persist as before).
+- Repository renamed to `bhaweshverma50/spacelens` — old GitHub URLs redirect.
 
 ## [2.13.0] — 2026-06-04
 

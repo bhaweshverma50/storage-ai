@@ -1,5 +1,5 @@
 import XCTest
-@testable import StorageAI
+@testable import SpaceLens
 
 final class FileTreeBuilderTests: XCTestCase {
     private func makeTempTree() throws -> URL {

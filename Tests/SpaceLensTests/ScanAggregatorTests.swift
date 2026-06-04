@@ -1,5 +1,5 @@
 import XCTest
-@testable import StorageAI
+@testable import SpaceLens
 
 /// The drill-down views read `filesByCategory`, which is fed from scan progress updates.
 /// These tests pin the contract that updates carry the LIVE top-files snapshot — without it,

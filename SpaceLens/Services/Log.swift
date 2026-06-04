@@ -5,7 +5,7 @@ import os
 /// Paths are logged with .public privacy only where they aid debugging; avoid logging file
 /// contents or anything sensitive.
 enum Log {
-    private static let subsystem = "com.storageai.app"
+    private static let subsystem = "com.spacelens.app"
 
     static let scan = Logger(subsystem: subsystem, category: "scan")
     static let cache = Logger(subsystem: subsystem, category: "cache")

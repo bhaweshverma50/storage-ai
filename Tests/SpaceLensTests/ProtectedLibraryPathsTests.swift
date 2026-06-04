@@ -1,5 +1,5 @@
 import XCTest
-@testable import StorageAI
+@testable import SpaceLens
 
 /// Touching Photos/Music-library content (even AVAsset metadata loads) raises blocking macOS
 /// TCC prompts. These tests pin the shared guard that scanners and analyzers use to avoid that.

@@ -1,6 +1,6 @@
 import XCTest
 import CoreGraphics
-@testable import StorageAI
+@testable import SpaceLens
 
 final class TreemapLayoutTests: XCTestCase {
     private let rect = CGRect(x: 0, y: 0, width: 600, height: 400)

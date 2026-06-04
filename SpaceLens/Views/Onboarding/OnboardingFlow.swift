@@ -15,7 +15,7 @@ struct OnboardingFlow: View {
         OnboardingStep(
             icon: "sparkles",
             iconColor: .purple,
-            title: "Welcome to Storage AI",
+            title: "Welcome to SpaceLens",
             subtitle: "Your intelligent storage companion",
             description: "We'll help you understand exactly where your disk space is going and how to reclaim it. Let's set up a few permissions to get started.",
             buttonTitle: nil,
@@ -26,7 +26,7 @@ struct OnboardingFlow: View {
             iconColor: .blue,
             title: "Full Disk Access",
             subtitle: "Required for complete scans",
-            description: "This permission allows Storage AI to scan all files on your Mac, including system files and app data. Without it, some areas may be inaccessible.",
+            description: "This permission allows SpaceLens to scan all files on your Mac, including system files and app data. Without it, some areas may be inaccessible.",
             buttonTitle: "Open System Settings",
             buttonAction: { openPrivacyPane("Privacy_AllFiles") }
         ),
@@ -44,7 +44,7 @@ struct OnboardingFlow: View {
             iconColor: .cyan,
             title: "AI Recommendations",
             subtitle: "Optional: Local AI insights",
-            description: "Storage AI can use Ollama (local AI) to provide smart cleanup recommendations. This runs entirely on your Mac for privacy.",
+            description: "SpaceLens can use Ollama (local AI) to provide smart cleanup recommendations. This runs entirely on your Mac for privacy.",
             buttonTitle: nil, // We'll use custom UI for this step
             buttonAction: nil
         ),

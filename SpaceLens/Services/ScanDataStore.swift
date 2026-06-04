@@ -11,7 +11,7 @@ actor ScanDataStore {
     // safe to use from the synchronous init and any context.
     private nonisolated var cacheDirectory: URL {
         let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
-        return paths[0].appendingPathComponent("com.storageai.app", isDirectory: true)
+        return paths[0].appendingPathComponent("com.spacelens.app", isDirectory: true)
     }
 
     private nonisolated var scanDataURL: URL {

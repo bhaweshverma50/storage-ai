@@ -2,23 +2,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "StorageAI",
+    name: "SpaceLens",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "StorageAI", targets: ["StorageAI"])
+        .executable(name: "SpaceLens", targets: ["SpaceLens"])
     ],
     targets: [
         .executableTarget(
-            name: "StorageAI",
-            path: "StorageAI",
-            exclude: ["Info.plist", "StorageAI.entitlements"]
+            name: "SpaceLens",
+            path: "SpaceLens",
+            exclude: ["Info.plist", "SpaceLens.entitlements"]
         ),
         .testTarget(
-            name: "StorageAITests",
-            dependencies: ["StorageAI"],
-            path: "Tests/StorageAITests"
+            name: "SpaceLensTests",
+            dependencies: ["SpaceLens"],
+            path: "Tests/SpaceLensTests"
         )
     ]
 )

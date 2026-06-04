@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Storage AI is a macOS disk space analyzer application built with SwiftUI. It scans the file system, categorizes files by type, and optionally uses local Ollama LLM for AI-powered cleanup recommendations. The app runs as both a windowed application and a menu bar extra.
+SpaceLens is a macOS disk space analyzer application built with SwiftUI. It scans the file system, categorizes files by type, and optionally uses local Ollama LLM for AI-powered cleanup recommendations. The app runs as both a windowed application and a menu bar extra.
 
 ## Build Commands
 
@@ -19,7 +19,7 @@ swift build
 ./scripts/create-dmg.sh
 ```
 
-The release binary is output to `.build/release/StorageAI`.
+The release binary is output to `.build/release/SpaceLens`.
 
 ## Architecture
 

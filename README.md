@@ -1,6 +1,6 @@
 <div align="center">
 
-# Storage AI
+# SpaceLens
 
 ### Intelligent Disk Space Analyzer for macOS
 
@@ -8,11 +8,11 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=for-the-badge&logo=swift&logoColor=white)](https://swift.org/)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-Native-purple?style=for-the-badge&logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.13.0-brightgreen?style=for-the-badge)](../../releases/latest)
+[![Version](https://img.shields.io/badge/Version-2.14.0-brightgreen?style=for-the-badge)](../../releases/latest)
 
 <br/>
 
-**Storage AI** is a beautiful, native macOS app that helps you understand and reclaim your disk space. Powered by intelligent file categorization and optional local AI recommendations via Ollama.
+**SpaceLens** is a beautiful, native macOS app that helps you understand and reclaim your disk space. Powered by intelligent file categorization and optional local AI recommendations via Ollama.
 
 [Download Latest Release](../../releases/latest) · [Report Bug](../../issues) · [Request Feature](../../issues)
 
@@ -162,15 +162,15 @@ See the full [CHANGELOG](CHANGELOG.md) for details.
 
 1. Download the latest DMG from [Releases](../../releases/latest)
 2. Open the DMG file
-3. Drag **Storage AI** to your Applications folder
+3. Drag **SpaceLens** to your Applications folder
 4. Launch from Applications or Spotlight
 
 ### Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/bhaweshverma50/storage-ai.git
-cd storage-ai
+git clone https://github.com/bhaweshverma50/spacelens.git
+cd spacelens
 
 # Build release version
 swift build -c release
@@ -187,7 +187,7 @@ swift build -c release
 
 ### First Launch
 
-1. **Grant Permissions** - Storage AI needs Full Disk Access to scan your files
+1. **Grant Permissions** - SpaceLens needs Full Disk Access to scan your files
 2. **Optional AI Setup** - Enable Ollama for smart recommendations (auto-installs if needed)
 3. **Start Scan** - Click the scan button to analyze your disk
 4. **Explore Categories** - Click any category to see detailed file lists
@@ -206,17 +206,17 @@ swift build -c release
 
 ### AI Recommendations (Optional)
 
-Storage AI can automatically set up Ollama for you:
+SpaceLens can automatically set up Ollama for you:
 
 1. Go to **Settings** or enable during onboarding
 2. Click **Set Up Ollama** 
-3. Storage AI will download, install, and configure Ollama automatically
+3. SpaceLens will download, install, and configure Ollama automatically
 4. Get intelligent cleanup suggestions powered by local AI
 
 Or manually install:
 1. Install [Ollama](https://ollama.ai) on your Mac
 2. Pull a model: `ollama pull llama3.2`
-3. Enable Ollama in Storage AI Settings
+3. Enable Ollama in SpaceLens Settings
 
 ## 🛠 Requirements
 
@@ -228,7 +228,7 @@ Or manually install:
 ## 🏗 Architecture
 
 ```
-StorageAI/
+SpaceLens/
 ├── Models/
 │   ├── AppState.swift        # Central state management
 │   └── StorageModels.swift   # Data models

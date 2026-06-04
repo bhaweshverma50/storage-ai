@@ -165,7 +165,7 @@ struct DashboardView: View {
         .listStyle(.sidebar)
         .tint(accentTheme)
         .accentColor(accentTheme)
-        .navigationTitle("Storage AI")
+        .navigationTitle("SpaceLens")
         .frame(minWidth: 220)
     }
     

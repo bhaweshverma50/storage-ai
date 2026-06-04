@@ -3,19 +3,19 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Storage AI</string>
+    <string>SpaceLens</string>
     <key>CFBundleDisplayName</key>
-    <string>Storage AI</string>
+    <string>SpaceLens</string>
     <key>CFBundleIdentifier</key>
-    <string>com.storageai.app</string>
+    <string>com.spacelens.app</string>
     <key>CFBundleVersion</key>
-    <string>31</string>
+    <string>32</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.13.0</string>
+    <string>2.14.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>StorageAI</string>
+    <string>SpaceLens</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>LSMinimumSystemVersion</key>
@@ -45,22 +45,22 @@
         </dict>
     </dict>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Storage AI. All rights reserved.</string>
+    <string>Copyright © 2026 SpaceLens. All rights reserved.</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>NSSystemAdministrationUsageDescription</key>
-    <string>Storage AI needs administrator access to scan and clean system files.</string>
+    <string>SpaceLens needs administrator access to scan and clean system files.</string>
     <key>NSDesktopFolderUsageDescription</key>
-    <string>Storage AI measures how much disk space the files on your Desktop use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <string>SpaceLens measures how much disk space the files on your Desktop use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
     <key>NSDocumentsFolderUsageDescription</key>
-    <string>Storage AI measures how much disk space your Documents use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <string>SpaceLens measures how much disk space your Documents use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
     <key>NSDownloadsFolderUsageDescription</key>
-    <string>Storage AI measures how much disk space your Downloads use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
+    <string>SpaceLens measures how much disk space your Downloads use. Grant Full Disk Access instead to avoid per-folder prompts.</string>
     <key>NSRemovableVolumesUsageDescription</key>
-    <string>Storage AI can include external drives in scans when you choose to scan them.</string>
+    <string>SpaceLens can include external drives in scans when you choose to scan them.</string>
     <key>NSNetworkVolumesUsageDescription</key>
-    <string>Storage AI can include network volumes in scans when you choose to scan them.</string>
+    <string>SpaceLens can include network volumes in scans when you choose to scan them.</string>
     <key>NSAppleMusicUsageDescription</key>
-    <string>Storage AI only measures file sizes — it never reads your music, listening activity, or media library contents.</string>
+    <string>SpaceLens only measures file sizes — it never reads your music, listening activity, or media library contents.</string>
 </dict>
 </plist>

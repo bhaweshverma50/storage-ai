@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# Storage AI DMG Creation Script
+# SpaceLens DMG Creation Script
 # Creates a professional macOS DMG installer
 
 set -e
 
 # Configuration
-APP_NAME="Storage AI"
-BUNDLE_NAME="StorageAI"
-VERSION="2.13.0"
-BUILD_NUMBER="${BUILD_NUMBER:-31}"
-DMG_NAME="StorageAI-${VERSION}"
-SOURCE_PLIST="$(pwd)/StorageAI/Info.plist"
-ENTITLEMENTS="$(pwd)/StorageAI/StorageAI.entitlements"
+APP_NAME="SpaceLens"
+BUNDLE_NAME="SpaceLens"
+VERSION="2.14.0"
+BUILD_NUMBER="${BUILD_NUMBER:-32}"
+DMG_NAME="SpaceLens-${VERSION}"
+SOURCE_PLIST="$(pwd)/SpaceLens/Info.plist"
+ENTITLEMENTS="$(pwd)/SpaceLens/SpaceLens.entitlements"
 # Signing identity. Preference order: explicit $CODESIGN_IDENTITY, else the first
 # "Developer ID Application" identity, else the first "Apple Development" identity,
 # else ad-hoc ("-"). A STABLE identity matters even for local builds: macOS TCC ties
@@ -51,7 +51,7 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 # Copy executable
 cp "${BUILD_DIR}/${BUNDLE_NAME}" "${APP_BUNDLE}/Contents/MacOS/${BUNDLE_NAME}"
 
-# Build Info.plist from the single source of truth (StorageAI/Info.plist) rather than a
+# Build Info.plist from the single source of truth (SpaceLens/Info.plist) rather than a
 # divergent inline copy, then stamp version/build and ensure the keys the bundle needs.
 echo "📝 Generating Info.plist from source (v${VERSION} build ${BUILD_NUMBER})..."
 PB=/usr/libexec/PlistBuddy
@@ -62,7 +62,7 @@ cp "${SOURCE_PLIST}" "${PLIST}"
 "${PB}" -c "Set :LSMinimumSystemVersion 14.0" "${PLIST}" 2>/dev/null || "${PB}" -c "Add :LSMinimumSystemVersion string 14.0" "${PLIST}"
 "${PB}" -c "Add :CFBundleIconFile string AppIcon" "${PLIST}" 2>/dev/null || "${PB}" -c "Set :CFBundleIconFile AppIcon" "${PLIST}"
 "${PB}" -c "Add :NSPrincipalClass string NSApplication" "${PLIST}" 2>/dev/null || true
-"${PB}" -c "Add :CFBundleDisplayName string Storage AI" "${PLIST}" 2>/dev/null || true
+"${PB}" -c "Add :CFBundleDisplayName string SpaceLens" "${PLIST}" 2>/dev/null || true
 
 # Create PkgInfo
 echo -n "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
@@ -224,7 +224,7 @@ tell application "Finder"
         set arrangement of viewOptions to not arranged
         set icon size of viewOptions to 100
         set background picture of viewOptions to file ".background:background.png"
-        set position of item "Storage AI.app" of container window to {165, 180}
+        set position of item "SpaceLens.app" of container window to {165, 180}
         set position of item "Applications" of container window to {495, 180}
         close
         open
@@ -251,8 +251,8 @@ rm -f "${TEMP_DMG}"
 
 # Optional notarization + stapling (recommended for distribution). Requires a real
 # Developer ID signature and a stored notarytool keychain profile:
-#   xcrun notarytool store-credentials "StorageAI-Notary" --apple-id ... --team-id ... --password ...
-#   NOTARIZE=1 NOTARY_PROFILE="StorageAI-Notary" CODESIGN_IDENTITY="Developer ID Application: ..." ./scripts/create-dmg.sh
+#   xcrun notarytool store-credentials "SpaceLens-Notary" --apple-id ... --team-id ... --password ...
+#   NOTARIZE=1 NOTARY_PROFILE="SpaceLens-Notary" CODESIGN_IDENTITY="Developer ID Application: ..." ./scripts/create-dmg.sh
 if [ "${NOTARIZE:-0}" = "1" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
     echo "📤 Submitting to Apple notary service..."
     xcrun notarytool submit "${FINAL_DMG}" --keychain-profile "${NOTARY_PROFILE}" --wait
@@ -275,4 +275,4 @@ echo "📏 Size: ${DMG_SIZE}"
 echo "🏷️  Version: ${VERSION}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "To install: Open the DMG and drag Storage AI to Applications"
+echo "To install: Open the DMG and drag SpaceLens to Applications"

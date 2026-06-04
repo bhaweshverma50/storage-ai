@@ -1,5 +1,5 @@
 import XCTest
-@testable import StorageAI
+@testable import SpaceLens
 
 final class ScanRootsBuilderTests: XCTestCase {
     private let home = FileManager.default.homeDirectoryForCurrentUser

@@ -9,7 +9,7 @@ final class ThumbnailCache: NSObject, NSCacheDelegate {
     static let shared = ThumbnailCache()
 
     private let cache = NSCache<NSString, NSImage>()
-    private let queue = DispatchQueue(label: "com.storageai.thumbnailcache", qos: .userInitiated, attributes: .concurrent)
+    private let queue = DispatchQueue(label: "com.spacelens.thumbnailcache", qos: .userInitiated, attributes: .concurrent)
 
     // Real (approximate) live-item count, kept honest via insert/clear/eviction tracking so the
     // dev Resource Monitor reports actual cache occupancy rather than a fabricated constant.

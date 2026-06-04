@@ -1,6 +1,6 @@
 import XCTest
 import SwiftUI
-@testable import StorageAI
+@testable import SpaceLens
 
 final class FileKindTests: XCTestCase {
     func testCommonExtensionsMapToExpectedKinds() {

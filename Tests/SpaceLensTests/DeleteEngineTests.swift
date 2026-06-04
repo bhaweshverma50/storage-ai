@@ -1,5 +1,5 @@
 import XCTest
-@testable import StorageAI
+@testable import SpaceLens
 
 final class DeleteEngineSafetyTests: XCTestCase {
     private let home = FileManager.default.homeDirectoryForCurrentUser
@@ -59,7 +59,7 @@ final class DeleteEngineSafetyTests: XCTestCase {
     func testDeleteDryRunPreviewsSafePaths() throws {
         let fm = FileManager.default
         let cachesRoot = home.appendingPathComponent("Library/Caches")
-        let testDir = cachesRoot.appendingPathComponent("StorageAITest-\(UUID().uuidString)")
+        let testDir = cachesRoot.appendingPathComponent("SpaceLensTest-\(UUID().uuidString)")
         try fm.createDirectory(at: testDir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: testDir) }
         try "hello".write(to: testDir.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
@@ -85,7 +85,7 @@ final class DeleteEngineSafetyTests: XCTestCase {
         // A directory's own stat size is ~0 — freedBytes must sum its CONTENTS, otherwise
         // trashing a multi-GB app-data folder reports "freed Zero KB" (real user-facing bug).
         let fm = FileManager.default
-        let testDir = home.appendingPathComponent("Library/Caches/StorageAITest-\(UUID().uuidString)")
+        let testDir = home.appendingPathComponent("Library/Caches/SpaceLensTest-\(UUID().uuidString)")
         try fm.createDirectory(at: testDir.appendingPathComponent("sub"), withIntermediateDirectories: true)
         let payload = Data(repeating: 0xAB, count: 64_000)
         try payload.write(to: testDir.appendingPathComponent("a.bin"))
@@ -101,7 +101,7 @@ final class DeleteEngineSafetyTests: XCTestCase {
         // App-data path discovery can yield the same folder via name AND bundle id; the engine
         // must process each unique path once so outcomes don't report phantom skips.
         let fm = FileManager.default
-        let testDir = home.appendingPathComponent("Library/Caches/StorageAITest-\(UUID().uuidString)")
+        let testDir = home.appendingPathComponent("Library/Caches/SpaceLensTest-\(UUID().uuidString)")
         try fm.createDirectory(at: testDir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: testDir) }
 

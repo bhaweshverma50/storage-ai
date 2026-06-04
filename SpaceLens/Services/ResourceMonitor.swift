@@ -242,7 +242,7 @@ final class ResourceMonitor: ObservableObject {
     
     private func getCacheFileSize(name: String) async -> Int64 {
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("com.storageai.app")
+            .appendingPathComponent("com.spacelens.app")
         
         guard let cacheDir = cacheDir else { return 0 }
         
@@ -260,7 +260,7 @@ final class ResourceMonitor: ObservableObject {
     
     func copyStatsToClipboard() {
         let stats = """
-        Storage AI Resource Monitor
+        SpaceLens Resource Monitor
         ==========================
         Memory (Resident): \(memoryUsage.formattedResident)
         Memory (Virtual): \(memoryUsage.formattedVirtual)

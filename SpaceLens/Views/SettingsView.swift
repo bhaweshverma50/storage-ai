@@ -75,7 +75,7 @@ struct SettingsView: View {
             Text("Settings")
                 .font(.title.weight(.semibold))
             
-            Text("Configure Storage AI preferences")
+            Text("Configure SpaceLens preferences")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -145,7 +145,7 @@ struct SettingsView: View {
                         }
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Storage AI")
+                        Text("SpaceLens")
                             .font(.subheadline.weight(.semibold))
                         
                         Text("Version \(AppVersion.current)")

@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct StorageAIApp: App {
+struct SpaceLensApp: App {
     @StateObject private var appState = AppState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
@@ -192,7 +192,7 @@ struct MenuBarView: View {
             
             // Menu Actions
             VStack(spacing: 0) {
-                MenuBarMenuItem(title: "Open Storage AI", icon: "macwindow") {
+                MenuBarMenuItem(title: "Open SpaceLens", icon: "macwindow") {
                     openApp()
                 }
                 
