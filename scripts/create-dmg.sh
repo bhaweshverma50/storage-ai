@@ -13,8 +13,18 @@ BUILD_NUMBER="${BUILD_NUMBER:-30}"
 DMG_NAME="StorageAI-${VERSION}"
 SOURCE_PLIST="$(pwd)/StorageAI/Info.plist"
 ENTITLEMENTS="$(pwd)/StorageAI/StorageAI.entitlements"
-# Signing identity: "-" = ad-hoc (local builds). For a distributable build, export
-# CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)".
+# Signing identity. Preference order: explicit $CODESIGN_IDENTITY, else the first
+# "Developer ID Application" identity, else the first "Apple Development" identity,
+# else ad-hoc ("-"). A STABLE identity matters even for local builds: macOS TCC ties
+# permission grants (folder access, Full Disk Access, media library) to the app's code
+# identity, and ad-hoc signatures change on every build — so ad-hoc-signed builds re-prompt
+# for every permission after each reinstall.
+if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+    CODESIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+fi
+if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+    CODESIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')
+fi
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"

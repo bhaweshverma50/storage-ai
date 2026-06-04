@@ -25,15 +25,11 @@ enum FileTreeBuilder {
 
     private static let keys: Set<URLResourceKey> = [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey, .isSymbolicLinkKey]
 
-    /// Protected media-library package bundles. Descending into these triggers a blocking macOS
-    /// privacy (TCC) prompt for Photos/Apple Music access, which would stall the walk — so we
-    /// treat them as opaque leaves (don't descend) the same way the OS treats them as packages.
-    private static let protectedBundleExtensions: Set<String> = [
-        "photoslibrary", "migratedphotolibrary", "photolibrary", "aplibrary",
-        "musiclibrary", "tvlibrary", "imovielibrary", "theater"
-    ]
+    /// Protected media-library package bundles (see ProtectedLibraryPaths). Descending into these
+    /// triggers a blocking macOS privacy (TCC) prompt for Photos/Apple Music access, which would
+    /// stall the walk — so we treat them as opaque leaves the same way the OS treats packages.
     private static func isProtectedLibrary(_ url: URL) -> Bool {
-        protectedBundleExtensions.contains(url.pathExtension.lowercased())
+        ProtectedLibraryPaths.isProtectedBundle(url)
     }
 
     // MARK: - One-time size walk

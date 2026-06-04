@@ -118,7 +118,10 @@ actor MediaCompressionService {
         var totalOriginalSize: Int64 = 0
         var totalCompressedSize: Int64 = 0
         var errors: [String] = []
-        
+
+        // Defense-in-depth: never compress Photos/Music-library content (AVAsset on it raises
+        // the media-library TCC prompt, and rewriting app-managed media corrupts the library).
+        let items = items.filter { !ProtectedLibraryPaths.isInsideProtectedLibrary($0.url) }
         let total = items.count
         
         for (index, item) in items.enumerated() {

@@ -130,6 +130,10 @@ actor MediaAnalysisService {
         _ files: [FileEntry],
         progress: @escaping (Double, String?) -> Void
     ) async -> [MediaItem] {
+        // Never open Photos/Music-library content: loading it (even AVAsset metadata) raises a
+        // blocking "Apple Music / media library" TCC prompt, and those files are app-managed —
+        // not safe cleanup candidates anyway.
+        let files = files.filter { !ProtectedLibraryPaths.isInsideProtectedLibrary($0.url) }
         let total = files.count
         let useStreaming = total > 1000  // Stream to disk for large analyses
         
