@@ -107,8 +107,12 @@ enum DeleteEngine {
     /// delete — the item is left in place and the failure recorded.
     private static func trashOne(_ url: URL, into outcome: inout Outcome) {
         let fm = FileManager.default
-        let size = (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]))
-            .flatMap { Int64($0.totalFileAllocatedSize ?? $0.fileSize ?? 0) } ?? 0
+        // A directory's own stat size is ~0 — sum its contents so freedBytes is honest
+        // (otherwise trashing a multi-GB app-data folder reports "freed Zero KB").
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey])
+        let size: Int64 = values?.isDirectory == true
+            ? FileIndexer.sizeOfPath(url)
+            : values.flatMap { Int64($0.totalFileAllocatedSize ?? $0.fileSize ?? 0) } ?? 0
         do {
             try fm.trashItem(at: url, resultingItemURL: nil)
             outcome.trashed.append(url)
@@ -138,9 +142,13 @@ enum DeleteEngine {
     static func delete(targets: [CleanupTarget], dryRun: Bool) -> Outcome {
         var outcome = Outcome()
         let fm = FileManager.default
+        // App-data path discovery can yield the same folder via app name AND bundle id —
+        // process each unique path once so outcomes don't report phantom skips.
+        var seen = Set<String>()
 
         for target in targets {
             for path in target.paths {
+                guard seen.insert(normalized(path)).inserted else { continue }
                 guard fm.fileExists(atPath: path.path) else { continue }
 
                 guard isWithinCleanupRoots(path) else {
@@ -167,7 +175,9 @@ enum DeleteEngine {
     static func trashFiles(_ urls: [URL], dryRun: Bool = false) -> Outcome {
         var outcome = Outcome()
         let fm = FileManager.default
+        var seen = Set<String>()
         for url in urls {
+            guard seen.insert(normalized(url)).inserted else { continue }
             guard fm.fileExists(atPath: url.path) else { continue }
             guard !isCriticalSystemPath(url) else {
                 outcome.blocked.append(url)

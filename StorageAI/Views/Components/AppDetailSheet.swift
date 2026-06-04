@@ -350,6 +350,18 @@ struct AppDetailSheet: View {
 
     // MARK: - Real cleanup actions (move to Trash; never permanent, never simulated)
 
+    /// Build an error message that says WHY nothing was trashed (e.g. a permissions failure),
+    /// not just how many items were skipped — otherwise failures look like silent no-ops.
+    private func failureSummary(_ prefix: String, outcome: DeleteEngine.Outcome) -> String {
+        if let reason = outcome.failed.first?.reason {
+            return "\(prefix): \(reason)"
+        }
+        if outcome.blockedCount > 0 {
+            return "\(prefix): \(outcome.blockedCount) item(s) are outside the safe cleanup locations."
+        }
+        return "\(prefix) (\(outcome.failedCount + outcome.blockedCount) items skipped)."
+    }
+
     private func cleanCache() {
         isProcessing = true
         operationError = nil
@@ -366,10 +378,10 @@ struct AppDetailSheet: View {
                 if outcome.didTrashNothing {
                     operationError = targets[0].paths.isEmpty
                         ? "No cache found to remove."
-                        : "Couldn't clean cache (\(outcome.failedCount + outcome.blockedCount) items skipped)."
+                        : failureSummary("Couldn't clean cache", outcome: outcome)
                 } else {
                     currentCacheSize = 0
-                    operationResult = "Moved \(Formatters.bytes(outcome.freedBytes)) of cache to Trash"
+                    operationResult = "Moved \(Formatters.bytes(outcome.freedBytes)) of cache to Trash. Empty the Trash to reclaim the space."
                     onCleanup?(outcome.freedBytes)
                 }
             }
@@ -395,15 +407,15 @@ struct AppDetailSheet: View {
                 if outcome.didTrashNothing {
                     operationError = paths.isEmpty
                         ? "No app data found to remove."
-                        : "Couldn't remove app data (\(outcome.failedCount + outcome.blockedCount) items skipped)."
+                        : failureSummary("Couldn't remove app data", outcome: outcome)
                 } else {
                     currentSupportSize = 0
                     currentCacheSize = 0
                     currentContainerSize = 0
                     let skipped = outcome.failedCount + outcome.blockedCount
                     operationResult = skipped > 0
-                        ? "Moved \(Formatters.bytes(outcome.freedBytes)) to Trash (\(skipped) skipped)"
-                        : "Moved \(Formatters.bytes(outcome.freedBytes)) of app data to Trash"
+                        ? "Moved \(Formatters.bytes(outcome.freedBytes)) to Trash (\(skipped) skipped). Empty the Trash to reclaim the space."
+                        : "Moved \(Formatters.bytes(outcome.freedBytes)) of app data to Trash. Empty the Trash to reclaim the space."
                     onCleanup?(outcome.freedBytes)
                 }
             }
