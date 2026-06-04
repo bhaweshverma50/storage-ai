@@ -308,7 +308,11 @@ struct TreemapCanvas: View {
         let path = roundedPath(rect, inset: 0.5)
 
         if node.isDirectory {
-            ctx.fill(path, with: .color(Color.secondary.opacity(0.14)))
+            // Deterministic per-folder hue (hash of the name) instead of flat gray — folders
+            // dominate the canvas under lazy loading, so this is what makes the map colorful.
+            // Deeper levels fade so nested children and file-kind colors still pop.
+            let tint = FolderPalette.color(forName: node.name)
+            ctx.fill(path, with: .color(tint.opacity(depth == 0 ? 0.85 : 0.55)))
             if depth < maxDrawDepth, rect.width > 22, rect.height > 22 {
                 let inset = rect.insetBy(dx: 2, dy: 2)
                 for child in layoutChildren(of: node, in: inset) {

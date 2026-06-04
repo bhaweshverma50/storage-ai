@@ -153,32 +153,35 @@ final class ResourceMonitor: ObservableObject {
     }
     
     private func collectMemoryUsage() -> MemoryUsage {
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
-        
+        // Report phys_footprint (what Xcode's memory gauge and `footprint` show), not
+        // resident_size: RSS keeps counting freed-but-not-reclaimed malloc pages after big
+        // transient walks, so it reads gigabytes while the app actually holds tens of MB.
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size) / 4
+
         let result = withUnsafeMutablePointer(to: &info) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
             }
         }
-        
+
         guard result == KERN_SUCCESS else {
             return MemoryUsage(resident: 0, virtual: 0, peak: peakMemory, compressed: 0)
         }
-        
-        let resident = Int64(info.resident_size)
+
+        let footprint = Int64(info.phys_footprint)
         let virtual = Int64(info.virtual_size)
-        
+
         // Update peak memory
-        if resident > peakMemory {
-            peakMemory = resident
+        if footprint > peakMemory {
+            peakMemory = footprint
         }
-        
+
         return MemoryUsage(
-            resident: resident,
+            resident: footprint,
             virtual: virtual,
             peak: peakMemory,
-            compressed: 0  // Compressed memory requires additional API calls
+            compressed: Int64(info.compressed)
         )
     }
     

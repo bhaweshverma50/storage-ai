@@ -20,4 +20,21 @@ final class FileKindTests: XCTestCase {
         let kinds = FileKind.allCases
         XCTAssertEqual(Set(kinds.map(\.label)).count, kinds.count)
     }
+
+    func testNewKindsMapTheirExtensions() {
+        XCTAssertEqual(FileKind.forExtension("psd"), .design)
+        XCTAssertEqual(FileKind.forExtension("sqlite"), .data)
+        XCTAssertEqual(FileKind.forExtension("json"), .data)
+        XCTAssertEqual(FileKind.forExtension("dmg"), .diskImage)
+        XCTAssertEqual(FileKind.forExtension("ISO"), .diskImage)
+        XCTAssertEqual(FileKind.forExtension("ttf"), .font)
+    }
+
+    func testFolderPaletteIsDeterministicAcrossCalls() {
+        // The hue must come from a stable hash — String.hashValue is seeded per-process and
+        // would reshuffle every folder's color on each launch.
+        XCTAssertEqual(FolderPalette.fnv1a("node_modules"), FolderPalette.fnv1a("node_modules"))
+        XCTAssertNotEqual(FolderPalette.fnv1a("node_modules"), FolderPalette.fnv1a("Library"))
+        XCTAssertEqual(FolderPalette.color(forName: "Documents"), FolderPalette.color(forName: "Documents"))
+    }
 }
