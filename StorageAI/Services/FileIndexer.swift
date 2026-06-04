@@ -13,6 +13,10 @@ struct ScanUpdate {
     var phase: ScanPhase
     var buckets: [StorageCategory: Int64]
     var fileCounts: [StorageCategory: Int]  // File counts per category
+    /// Live snapshot of the largest files per category (sorted largest-first). Streaming this
+    /// during the scan keeps drill-down views populated even for cancelled/interrupted scans —
+    /// previously files only surfaced at completion, so partial scans had empty category views.
+    var topFiles: [StorageCategory: [FileEntry]]
 }
 
 /// Cancellation token for cooperative cancellation
@@ -173,13 +177,19 @@ enum FileIndexer {
         }
         
         func emitProgress(currentPath: String, phase: ScanPhase) {
+            // Snapshot the heaps (≤1000 entries × 6 categories, emitted at most ~1/sec — cheap).
+            var topFiles: [StorageCategory: [FileEntry]] = [:]
+            for (category, heap) in fileHeaps where !heap.files.isEmpty {
+                topFiles[category] = heap.files.sorted { $0.sizeBytes > $1.sizeBytes }
+            }
             progressCallback(ScanUpdate(
                 scannedFiles: scannedFiles,
                 scannedBytes: scannedBytes,
                 currentPath: currentPath,
                 phase: phase,
                 buckets: buckets,
-                fileCounts: categoryFileCounts
+                fileCounts: categoryFileCounts,
+                topFiles: topFiles
             ))
         }
         

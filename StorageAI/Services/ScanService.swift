@@ -310,6 +310,14 @@ final class ScanService: ObservableObject {
                                 
                                 // Update file counts in real-time
                                 self.fileCounts = update.fileCounts
+
+                                // Stream the live top-files snapshot so category drill-down works
+                                // DURING the scan and survives cancellation/interruption (partial
+                                // saves persist it). Guarded so a sparse early snapshot never
+                                // wipes richer data already on screen (e.g. right after resume).
+                                if !update.topFiles.isEmpty {
+                                    self.filesByCategory = update.topFiles
+                                }
                             }
                         },
                         initialBuckets: resumeInitialBuckets,
