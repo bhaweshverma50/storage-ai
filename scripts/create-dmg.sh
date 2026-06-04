@@ -8,8 +8,8 @@ set -e
 # Configuration
 APP_NAME="Storage AI"
 BUNDLE_NAME="StorageAI"
-VERSION="2.12.1"
-BUILD_NUMBER="${BUILD_NUMBER:-30}"
+VERSION="2.13.0"
+BUILD_NUMBER="${BUILD_NUMBER:-31}"
 DMG_NAME="StorageAI-${VERSION}"
 SOURCE_PLIST="$(pwd)/StorageAI/Info.plist"
 ENTITLEMENTS="$(pwd)/StorageAI/StorageAI.entitlements"
