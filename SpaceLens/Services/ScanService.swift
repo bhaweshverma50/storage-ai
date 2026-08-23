@@ -17,6 +17,9 @@ final class ScanService: ObservableObject {
     @Published private(set) var lastError: String?
     /// Non-fatal advisory shown when a scan likely under-reported due to missing Full Disk Access.
     @Published private(set) var accessWarning: String?
+    /// Non-fatal advisory shown when scan progress stops advancing (e.g. blocked on a
+    /// permission prompt or an unusually slow subtree) instead of silently looking frozen.
+    @Published private(set) var stallWarning: String?
     @Published private(set) var lastScanDate: Date?
     @Published private(set) var hasLoadedCache = false
     @Published private(set) var isLoadingCache = true
@@ -177,19 +180,20 @@ final class ScanService: ObservableObject {
         // Register task with resource monitor
         ResourceMonitor.shared.registerTask(name: "Scan")
         
-        // Check if this is a resume BEFORE any state changes
+        // Check if this is a resume BEFORE any state changes.
+        // NOTE: "resume" re-enumerates every root from scratch (FileIndexer has no frontier
+        // bookmark), so previous totals must NOT be seeded into the aggregator — that added
+        // the whole tree on top of the partial counts, roughly doubling usage after every
+        // resume (and compounding further on each repeat). Nothing carries over — bytes,
+        // files and elapsed time are all recounted from zero. `isResume` now only picks the
+        // status label.
         let isResume = scanState == .partial && summary.totalBytes > 0
-        
-        // Capture initial values for resume BEFORE any resets
-        let resumeInitialBuckets: [StorageCategory: Int64]? = isResume ? Dictionary(uniqueKeysWithValues: summary.buckets.map { ($0.category, $0.bytes) }) : nil
-        let resumeInitialFiles: [StorageCategory: [FileEntry]]? = isResume ? filesByCategory : nil
-        let resumeScannedFiles = isResume ? progress.scannedFiles : 0
-        let resumeScannedBytes = isResume ? progress.scannedBytes : 0
-        
+
         // Set scanning state IMMEDIATELY
         isScanning = true
         lastError = nil
         accessWarning = nil
+        stallWarning = nil
         scanStartTime = Date()
         
         // Reset pause tracking
@@ -199,38 +203,26 @@ final class ScanService: ObservableObject {
         // Calculate total expected bytes (disk used space as estimate)
         totalExpectedBytes = summary.diskInfo.usedSpace
         
-        // Handle resume elapsed time
-        if isResume {
-            // Preserve the elapsed time from before pause
-            resumeElapsedTime = progress.elapsedSeconds
-        } else {
-            resumeElapsedTime = 0
-        }
-        
+        // A resume re-enumerates everything (see note above), so the previous partial's
+        // elapsed time must NOT carry over either. Pairing recounted-from-zero bytes with
+        // stale elapsed understates throughput, and that figure is written into the
+        // persisted performance history — inflating the ETA of every future scan.
+        resumeElapsedTime = 0
+
         // Get initial time estimate
         let initialEstimate = getInitialTimeEstimate()
-        
-        // Only reset progress for fresh scans
-        if !isResume {
-            progress = ScanProgress(
-                phase: .preparing,
-                estimatedSecondsRemaining: initialEstimate,
-                elapsedSeconds: 0
-            )
-            let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
-            summary = StorageSummary(buckets: initialBuckets)
-            filesByCategory = [:]
-        } else {
-            // For resume, update phase but keep counts
-            progress = ScanProgress(
-                scannedFiles: progress.scannedFiles,
-                scannedBytes: progress.scannedBytes,
-                currentPath: "Resuming scan...",
-                phase: .preparing,
-                estimatedSecondsRemaining: initialEstimate,
-                elapsedSeconds: resumeElapsedTime
-            )
-        }
+
+        // Counters restart in both cases; only the status label differs.
+        progress = ScanProgress(
+            currentPath: isResume ? "Restarting scan..." : "",
+            phase: .preparing,
+            estimatedSecondsRemaining: initialEstimate,
+            elapsedSeconds: 0
+        )
+        let initialBuckets = StorageCategory.allCases.map { StorageBucket(category: $0, bytes: 0) }
+        summary = StorageSummary(buckets: initialBuckets)
+        filesByCategory = [:]
+        fileCounts = [:]
         
         // Create cancellation token
         let token = CancellationToken()
@@ -240,8 +232,12 @@ final class ScanService: ObservableObject {
         let includeHidden = settings.includeHidden
         let excludedPaths = settings.excludedPaths
         
-        // Start periodic save task (saves every 60 seconds during scan)
+        // Periodic save (every 60s) + stall watchdog. The watchdog surfaces an advisory when
+        // file counts stop advancing for ~2 minutes — usually a pending TCC permission prompt
+        // or an unusually slow subtree — instead of leaving the UI silently frozen.
         periodicSaveTask = Task { [weak self] in
+            var lastSeenFiles = -1
+            var stalledChecks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60_000_000_000) // 60 seconds
                 guard let self = self, !Task.isCancelled, self.isScanning else { break }
@@ -250,6 +246,24 @@ final class ScanService: ObservableObject {
                         self.saveCurrentProgress()
                     }
                 }
+
+                // Stall detection
+                let currentFiles = await MainActor.run { self.progress.scannedFiles }
+                if !Task.isCancelled, currentFiles == lastSeenFiles {
+                    stalledChecks += 1
+                    if stalledChecks == 2 {
+                        let path = await MainActor.run { self.progress.currentPath }
+                        await MainActor.run {
+                            self.stallWarning = "Scan hasn't made progress for a few minutes\(path.isEmpty ? "" : " (near \(path))"). A folder-permission prompt may be waiting, or this location is very slow."
+                        }
+                    }
+                } else {
+                    stalledChecks = 0
+                    await MainActor.run {
+                        if self.stallWarning != nil { self.stallWarning = nil }
+                    }
+                }
+                lastSeenFiles = currentFiles
             }
         }
         
@@ -260,6 +274,8 @@ final class ScanService: ObservableObject {
             // Track last UI update to throttle updates and reduce memory pressure
             // Use actor-isolated state to avoid creating Tasks for each update
             let progressActor = ProgressThrottler(minInterval: 1.0)
+            // Orders progress ticks so out-of-order main-actor hops can't regress the UI.
+            let tickSequencer = ProgressTickSequencer()
             
             // Run the scan on a background thread with lower priority for efficiency
             let result: Result<ScanResult, Error> = await Task.detached(priority: .utility) { [weak self] in
@@ -274,26 +290,30 @@ final class ScanService: ObservableObject {
                             // Only update if enough time has passed (throttling)
                             guard progressActor.shouldUpdate() else { return }
                             guard !token.isCancelled else { return }
-                            
-                            // Dispatch to main thread without creating a Task
-                            DispatchQueue.main.async { [weak self] in
-                                // Ignore stale ticks: only apply if this is still the active scan's
-                                // token AND a scan is in progress. Otherwise a tick enqueued just
-                                // before completion/cancel could overwrite final results or
-                                // resurrect a cancelled scan's partial UI.
-                                guard let self = self,
-                                      !token.isCancelled,
-                                      self.cancellationToken === token,
-                                      self.isScanning else { return }
+
+                            // Hop to the main actor without bypassing isolation: mutating
+                            // @Published state from a non-isolated closure via
+                            // DispatchQueue.main.async breaks under strict concurrency.
+                            // Independent Tasks don't guarantee FIFO like DispatchQueue did,
+                            // so each tick carries a sequence number and stale (older) ticks
+                            // are dropped at apply time — otherwise progress can jump
+                            // backward or appear frozen on an old value.
+                            guard let service = self else { return }
+                            let seq = tickSequencer.next()
+                            Task { @MainActor in
+                                guard !token.isCancelled,
+                                      service.cancellationToken === token,
+                                      service.isScanning else { return }
+                                guard tickSequencer.accept(seq) else { return }
 
                                 // Calculate elapsed time and estimate
-                                let elapsed = self.getEffectiveElapsedTime()
-                                let estimate = self.calculateEstimatedTimeRemaining(
+                                let elapsed = service.getEffectiveElapsedTime()
+                                let estimate = service.calculateEstimatedTimeRemaining(
                                     scannedBytes: update.scannedBytes,
                                     elapsedSeconds: elapsed
                                 )
-                                
-                                self.progress = ScanProgress(
+
+                                service.progress = ScanProgress(
                                     scannedFiles: update.scannedFiles,
                                     scannedBytes: update.scannedBytes,
                                     currentPath: update.currentPath,
@@ -301,29 +321,25 @@ final class ScanService: ObservableObject {
                                     estimatedSecondsRemaining: estimate,
                                     elapsedSeconds: elapsed
                                 )
-                                
+
                                 // Update summary buckets in real-time
-                                let bucketList = StorageCategory.allCases.map { 
-                                    StorageBucket(category: $0, bytes: update.buckets[$0, default: 0]) 
+                                let bucketList = StorageCategory.allCases.map {
+                                    StorageBucket(category: $0, bytes: update.buckets[$0, default: 0])
                                 }
-                                self.summary = StorageSummary(buckets: bucketList)
-                                
+                                service.summary = StorageSummary(buckets: bucketList)
+
                                 // Update file counts in real-time
-                                self.fileCounts = update.fileCounts
+                                service.fileCounts = update.fileCounts
 
                                 // Stream the live top-files snapshot so category drill-down works
                                 // DURING the scan and survives cancellation/interruption (partial
                                 // saves persist it). Guarded so a sparse early snapshot never
                                 // wipes richer data already on screen (e.g. right after resume).
                                 if !update.topFiles.isEmpty {
-                                    self.filesByCategory = update.topFiles
+                                    service.filesByCategory = update.topFiles
                                 }
                             }
-                        },
-                        initialBuckets: resumeInitialBuckets,
-                        initialFiles: resumeInitialFiles,
-                        initialScannedFiles: resumeScannedFiles,
-                        initialScannedBytes: resumeScannedBytes
+                        }
                     )
                     return .success(scanResult)
                 } catch {
@@ -335,6 +351,7 @@ final class ScanService: ObservableObject {
             guard !token.isCancelled else {
                 await MainActor.run {
                     self.isScanning = false
+                    self.stallWarning = nil
                     ResourceMonitor.shared.unregisterTask(name: "Scan")
                 }
                 return
@@ -346,6 +363,7 @@ final class ScanService: ObservableObject {
             
             // Final update on main actor
             await MainActor.run {
+                self.stallWarning = nil
                 switch result {
                 case .success(let scanResult):
                     self.summary = StorageSummary(buckets: scanResult.buckets)
@@ -413,6 +431,7 @@ final class ScanService: ObservableObject {
         
         // Mark as partial scan
         scanState = .partial
+        stallWarning = nil
         
         // Calculate elapsed time to preserve for resume
         let elapsedTime = getEffectiveElapsedTime()
@@ -436,16 +455,29 @@ final class ScanService: ObservableObject {
     
     // MARK: - Save Current Progress
     
-    func saveCurrentProgress() {
+    /// - Parameter isScanActivity: `true` for saves that belong to an actual scan (start,
+    ///   periodic, finish, cancel) — these stamp "now" as the scan date and record the live
+    ///   scan duration. `false` when merely re-persisting an existing snapshot after a
+    ///   deletion: that must not claim a scan just ran, or the UI reports "scanned just now"
+    ///   and the next launch restores a duration that includes every idle hour since
+    ///   `scanStartTime`.
+    func saveCurrentProgress(isScanActivity: Bool = true) {
         let summaryToSave = self.summary
         let filesToSave = self.filesByCategory
         let countsToSave = self.fileCounts
         let progressToSave = self.progress
-        let scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
         let currentScanState = self.scanState
 
-        // Update last scan date for partial saves too
-        self.lastScanDate = Date()
+        let scanDate: Date
+        let scanDuration: TimeInterval
+        if isScanActivity {
+            scanDate = Date()
+            scanDuration = self.scanStartTime.map { Date().timeIntervalSince($0) } ?? 0
+            self.lastScanDate = scanDate
+        } else {
+            scanDate = self.lastScanDate ?? Date()
+            scanDuration = self.progress.elapsedSeconds
+        }
 
         Task.detached(priority: .background) {
             do {
@@ -455,7 +487,8 @@ final class ScanService: ObservableObject {
                     fileCounts: countsToSave,
                     progress: progressToSave,
                     scanDuration: scanDuration,
-                    scanState: currentScanState
+                    scanState: currentScanState,
+                    scanDate: scanDate
                 )
             } catch {
                 Log.cache.error("Failed to save current progress: \(error.localizedDescription, privacy: .public)")
@@ -466,6 +499,7 @@ final class ScanService: ObservableObject {
     func removeEntries(category: StorageCategory, ids: Set<UUID>) {
         guard var entries = filesByCategory[category] else { return }
         let removed = entries.filter { ids.contains($0.id) }
+        guard !removed.isEmpty else { return }
         entries.removeAll { ids.contains($0.id) }
         filesByCategory[category] = entries
 
@@ -474,9 +508,14 @@ final class ScanService: ObservableObject {
             buckets: summary.buckets.map { bucket in
                 guard bucket.category == category else { return bucket }
                 return StorageBucket(category: bucket.category, bytes: max(0, bucket.bytes - removedBytes))
-            }
+            },
+            diskInfo: .current
         )
-        
+
+        // Keep per-category counts honest too — the Categories cards read from fileCounts,
+        // so leaving it stale made deleted files keep being counted after removal.
+        fileCounts[category] = max(0, (fileCounts[category] ?? 0) - removed.count)
+
         progress = ScanProgress(
             scannedFiles: max(0, progress.scannedFiles - removed.count),
             scannedBytes: max(0, progress.scannedBytes - removedBytes),
@@ -485,6 +524,97 @@ final class ScanService: ObservableObject {
             estimatedSecondsRemaining: progress.estimatedSecondsRemaining,
             elapsedSeconds: progress.elapsedSeconds
         )
+
+        persistSnapshotIfNeeded()
+    }
+
+    /// Reflect items moved to Trash by any delete surface (Cleanup tab, category sheet, app
+    /// cleanup, media viewer) in the scanned totals, top-file lists, counts, and the persisted
+    /// cache. Without this the Overview chart, category cards, and next-launch numbers kept
+    /// reporting pre-cleanup sizes.
+    func applyCleanup(trashed: [URL], freedBytes: Int64) {
+        guard !trashed.isEmpty else { return }
+
+        let removedPaths = Set(trashed.map { $0.standardizedFileURL.path })
+
+        // Paths that already have tracked FileEntries — anything else was never itemized.
+        let trackedPaths = Set(filesByCategory.values.flatMap { entries in
+            entries.map { $0.url.standardizedFileURL.path }
+        })
+
+        // 1) Exact removals from the tracked top-files lists.
+        var removedBytesByCategory: [StorageCategory: Int64] = [:]
+        var removedCountByCategory: [StorageCategory: Int] = [:]
+        var newFilesByCategory = filesByCategory
+        for (category, entries) in filesByCategory {
+            let removed = entries.filter { removedPaths.contains($0.url.standardizedFileURL.path) }
+            guard !removed.isEmpty else { continue }
+            removedBytesByCategory[category, default: 0] += removed.reduce(0) { $0 + $1.sizeBytes }
+            removedCountByCategory[category, default: 0] += removed.count
+            newFilesByCategory[category] = entries.filter { !removedPaths.contains($0.url.standardizedFileURL.path) }
+        }
+        filesByCategory = newFilesByCategory
+
+        // 2) Whole-folder targets (Caches, Logs, Trash…) aren't itemized in the top-files
+        //    lists. Attribute their freed bytes to the categories the trashed paths belong
+        //    to so buckets still move instead of staying frozen at pre-cleanup figures.
+        let knownBytes = removedBytesByCategory.values.reduce(0, +)
+        let unaccountedBytes = max(0, freedBytes - knownBytes)
+        let untrackedURLs = trashed.filter { !trackedPaths.contains($0.standardizedFileURL.path) }
+        if unaccountedBytes > 0, !untrackedURLs.isEmpty {
+            // One classifier for the whole loop: its init builds two Sets and eight string
+            // concats, and a Caches clear can hand us thousands of URLs.
+            let classifier = StorageClassifier()
+            let share = unaccountedBytes / Int64(untrackedURLs.count)
+            // Hand the integer-division remainder to the last URL so the distributed total
+            // is exactly `unaccountedBytes` and buckets stay consistent with `scannedBytes`.
+            let remainder = unaccountedBytes - share * Int64(untrackedURLs.count)
+            for (index, url) in untrackedURLs.enumerated() {
+                let category = classifier.classify(url: url)
+                let bytes = share + (index == untrackedURLs.count - 1 ? remainder : 0)
+                removedBytesByCategory[category, default: 0] += bytes
+                // Count each untracked entry as one removal so the file count moves with the
+                // byte total instead of the two drifting apart.
+                // ponytail: a folder-clear reports only its top-level children, so this is a
+                // floor, not the true recursive count — the files are already in the Trash by
+                // now, so there's nothing left to walk. The next scan makes it exact.
+                removedCountByCategory[category, default: 0] += 1
+            }
+        }
+
+        summary = StorageSummary(
+            buckets: summary.buckets.map { bucket in
+                let delta = removedBytesByCategory[bucket.category] ?? 0
+                guard delta > 0 else { return bucket }
+                return StorageBucket(category: bucket.category, bytes: max(0, bucket.bytes - delta))
+            },
+            diskInfo: .current
+        )
+
+        let removedFileCount = removedCountByCategory.values.reduce(0, +)
+        if removedFileCount > 0 {
+            fileCounts = Dictionary(uniqueKeysWithValues: fileCounts.map { category, count in
+                (category, max(0, count - (removedCountByCategory[category] ?? 0)))
+            })
+        }
+
+        progress = ScanProgress(
+            scannedFiles: max(0, progress.scannedFiles - removedFileCount),
+            scannedBytes: max(0, progress.scannedBytes - freedBytes),
+            currentPath: progress.currentPath,
+            phase: progress.phase,
+            estimatedSecondsRemaining: progress.estimatedSecondsRemaining,
+            elapsedSeconds: progress.elapsedSeconds
+        )
+
+        persistSnapshotIfNeeded()
+    }
+
+    /// Persist current state so deletions survive relaunch. Skipped mid-scan — a background
+    /// save here would race with the live scan's own periodic saves.
+    private func persistSnapshotIfNeeded() {
+        guard !isScanning else { return }
+        saveCurrentProgress(isScanActivity: false)
     }
     
     func refreshDiskInfo() {
@@ -521,21 +651,47 @@ final class ProgressThrottler: @unchecked Sendable {
     private var lastUpdate: Date
     private let minInterval: TimeInterval
     private let lock = NSLock()
-    
+
     init(minInterval: TimeInterval) {
         self.minInterval = minInterval
-        self.lastUpdate = Date.distantPast
+        self.lastUpdate = .distantPast
     }
-    
+
     func shouldUpdate() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        
+
         let now = Date()
         if now.timeIntervalSince(lastUpdate) >= minInterval {
             lastUpdate = now
             return true
         }
         return false
+    }
+}
+
+/// Hands out monotonically increasing sequence numbers and accepts them for application
+/// exactly in issue order. `Task { @MainActor }` hops don't run FIFO (unlike
+/// DispatchQueue.main.async), so without this an older tick scheduled later could overwrite
+/// a newer one and make progress jump backward or stick.
+final class ProgressTickSequencer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var issued = 0
+    private var applied = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        issued += 1
+        return issued
+    }
+
+    /// Returns false for ticks older than the most recently applied one.
+    func accept(_ sequence: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard sequence > applied else { return false }
+        applied = sequence
+        return true
     }
 }

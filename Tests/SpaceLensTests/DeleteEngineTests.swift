@@ -19,6 +19,15 @@ final class DeleteEngineSafetyTests: XCTestCase {
         XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/sbin")))
     }
 
+    /// Default APFS is case-insensitive, so non-canonical spellings must be blocked too.
+    func testCaseVariantSpellingsOfSystemTreesAreCritical() {
+        XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/SYSTEM/Library")))
+        XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/system")))
+        XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/Private/var/db")))
+        XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/USR/BIN")))
+        XCTAssertTrue(DeleteEngine.isCriticalSystemPath(URL(fileURLWithPath: "/LIBRARY")))
+    }
+
     func testHomeDirectoryItselfIsCritical() {
         XCTAssertTrue(DeleteEngine.isCriticalSystemPath(home))
     }
@@ -109,5 +118,74 @@ final class DeleteEngineSafetyTests: XCTestCase {
                                    paths: [testDir, testDir, testDir], estimatedBytes: 0)
         let outcome = DeleteEngine.delete(targets: [target], dryRun: true)
         XCTAssertEqual(outcome.trashed.map { $0.path }, [testDir.path], "duplicates must collapse to one")
+    }
+}
+
+/// `trashItem` on a file that is already in `~/.Trash` silently succeeds and frees nothing,
+/// so emptying the Trash has to remove files outright. These tests pin the routing decision
+/// (which bucket an item lands in) using dry-run only — nothing is actually deleted.
+final class DeleteEngineEmptyTrashTests: XCTestCase {
+    private let home = FileManager.default.homeDirectoryForCurrentUser
+
+    private func target(_ title: String, _ path: URL) -> CleanupTarget {
+        CleanupTarget(title: title, description: "", scope: .safe, paths: [path], estimatedBytes: 0)
+    }
+
+    func testTrashContentsAreRoutedToPermanentDeletionNotTrashing() throws {
+        let trash = home.appendingPathComponent(".Trash")
+        let probe = trash.appendingPathComponent("spacelens_delete_engine_probe.txt")
+        try "probe".write(to: probe, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: probe) }
+
+        let outcome = DeleteEngine.delete(targets: [target("Trash", trash)], dryRun: true)
+
+        // Enumerating ~/.Trash needs Full Disk Access, which a test binary won't have.
+        // Without it the target must report a failure rather than a silent success.
+        let unreadable = outcome.failed.contains { $0.url.lastPathComponent == ".Trash" }
+        if unreadable {
+            XCTAssertTrue(outcome.removed.isEmpty,
+                          "an unreadable Trash must not report anything as removed")
+            return
+        }
+
+        let permanent = Set(outcome.deletedPermanently.map(\.lastPathComponent))
+        let trashed = Set(outcome.trashed.map(\.lastPathComponent))
+        XCTAssertTrue(permanent.contains(probe.lastPathComponent),
+                      "items inside ~/.Trash must be reported as permanent deletions")
+        XCTAssertFalse(trashed.contains(probe.lastPathComponent),
+                       "items inside ~/.Trash must never be reported as recoverably trashed")
+        // Still on disk: dry-run must not delete anything.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: probe.path))
+    }
+
+    /// Whatever the TCC outcome, an unreadable target is never silently counted as cleaned.
+    func testUnreadableTargetIsReportedNotSilentlySkipped() {
+        let trash = home.appendingPathComponent(".Trash")
+        let outcome = DeleteEngine.delete(targets: [target("Trash", trash)], dryRun: true)
+        XCTAssertFalse(outcome.failed.isEmpty && outcome.removed.isEmpty,
+                       "a target that yielded nothing must say why")
+    }
+
+    func testNonTrashCleanupTargetsStayRecoverable() throws {
+        let caches = home.appendingPathComponent("Library/Caches")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: caches.path), "no ~/Library/Caches")
+
+        let outcome = DeleteEngine.delete(targets: [target("App Caches", caches)], dryRun: true)
+
+        XCTAssertTrue(outcome.deletedPermanently.isEmpty,
+                      "only ~/.Trash may be emptied permanently")
+        XCTAssertEqual(outcome.removedCount, outcome.trashedCount)
+    }
+
+    /// The app's own state directory lives inside two cleanup targets (Application Support,
+    /// and Caches pre-migration) — clearing them must not delete our scan history.
+    func testOwnStateDirectoryIsNeverCleared() throws {
+        let appSupport = home.appendingPathComponent("Library/Application Support")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: appSupport.path), "no Application Support")
+
+        let outcome = DeleteEngine.delete(targets: [target("Application Support", appSupport)], dryRun: true)
+
+        XCTAssertFalse(outcome.removed.contains { $0.lastPathComponent == "com.spacelens.app" },
+                       "SpaceLens must never list its own state directory for deletion")
     }
 }

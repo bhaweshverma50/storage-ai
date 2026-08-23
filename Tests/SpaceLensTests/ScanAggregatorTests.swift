@@ -12,13 +12,7 @@ final class ScanAggregatorTests: XCTestCase {
 
     func testProgressUpdateCarriesTopFilesSortedLargestFirst() async {
         let box = UpdateBox()
-        let aggregator = FileIndexer.ScanAggregator(
-            initialBuckets: [:],
-            initialFiles: nil,
-            initialScannedFiles: 0,
-            initialScannedBytes: 0,
-            progress: { box.updates.append($0) }
-        )
+        let aggregator = FileIndexer.ScanAggregator(progress: { box.updates.append($0) })
 
         let small = FileEntry(url: URL(fileURLWithPath: "/tmp/small.txt"), sizeBytes: 10, modifiedAt: nil)
         let big = FileEntry(url: URL(fileURLWithPath: "/tmp/big.bin"), sizeBytes: 999, modifiedAt: nil)
@@ -40,21 +34,25 @@ final class ScanAggregatorTests: XCTestCase {
         XCTAssertEqual(update.fileCounts[.documents], 2)
     }
 
-    func testInitialFilesSeedTheTopFilesSnapshot() async {
-        // Resuming a partial scan re-seeds the heaps; the very first update must already
-        // include those files so the UI never regresses to an empty drill-down.
-        let box = UpdateBox()
-        let seeded = FileEntry(url: URL(fileURLWithPath: "/tmp/seeded.dat"), sizeBytes: 500, modifiedAt: nil)
-        let aggregator = FileIndexer.ScanAggregator(
-            initialBuckets: [:],
-            initialFiles: [.media: [seeded]],
-            initialScannedFiles: 1,
-            initialScannedBytes: 500,
-            progress: { box.updates.append($0) }
-        )
+}
 
-        await aggregator.emitProgress(currentPath: "", phase: .preparing)
+/// Out-of-order progress ticks must not regress the UI: accept() only passes ticks newer
+/// than the last applied one, regardless of arrival order.
+final class ProgressTickSequencerTests: XCTestCase {
+    func testAcceptsInIssueOrder() {
+        let seq = ProgressTickSequencer()
+        let a = seq.next()
+        let b = seq.next()
+        XCTAssertTrue(seq.accept(a))
+        XCTAssertTrue(seq.accept(b))
+    }
 
-        XCTAssertEqual(box.updates.last?.topFiles[.media]?.map(\.sizeBytes), [500])
+    func testRejectsStaleTicks() {
+        let seq = ProgressTickSequencer()
+        let a = seq.next()
+        let b = seq.next()
+        // Newer tick applied first (simulated race), then the older one arrives late.
+        XCTAssertTrue(seq.accept(b))
+        XCTAssertFalse(seq.accept(a))
     }
 }

@@ -173,7 +173,6 @@ struct MediaViewerView: View {
                     selectedSize: selectedSize,
                     compressionEstimate: compressionEstimate,
                     onCompress: { showCompressionSheet = true },
-                    onOrganize: organizeSelected,
                     onDelete: { showDeleteConfirmation = true },
                     onReveal: revealSelected
                 )
@@ -411,10 +410,14 @@ struct MediaViewerView: View {
     private func analyzeMedia() async {
         let mediaFiles = appState.scanService.filesByCategory[.media] ?? []
         guard !mediaFiles.isEmpty else { return }
-        
+
         operationState = .analyzing(progress: 0, currentFile: nil)
-        
+
+        // Throttle UI ticks to ~2/sec — spawning a Task per analyzed file for thousands of
+        // files is pure overhead (same pattern ScanService uses).
+        let throttler = ProgressThrottler(minInterval: 0.5)
         let result = await analysisService.performFullAnalysis(files: mediaFiles) { progress, file in
+            guard throttler.shouldUpdate() else { return }
             Task { @MainActor in
                 operationState = .analyzing(progress: progress, currentFile: file)
             }
@@ -524,39 +527,110 @@ struct MediaViewerView: View {
     }
     
     private func deleteSelected() async {
-        operationState = .deleting(progress: 0)
-        
         let itemsToDelete = selectedItems
-        var deletedCount = 0
-        
-        for (index, item) in itemsToDelete.enumerated() {
-            do {
-                try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
-                deletedCount += 1
-            } catch {
-                Log.media.error("Failed to delete \(item.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            }
-            
-            let progress = Double(index + 1) / Double(itemsToDelete.count)
-            await MainActor.run {
-                operationState = .deleting(progress: progress)
-            }
-        }
-        
+        guard !itemsToDelete.isEmpty else { return }
+
+        operationState = .deleting(progress: 0.15)
+
+        // Route through DeleteEngine so critical-system paths are refused and failures are
+        // reported instead of silently swallowed by a bare trashItem call.
+        let urls = itemsToDelete.map(\.url)
+        let outcome = await Task.detached(priority: .userInitiated) {
+            DeleteEngine.trashFiles(urls, dryRun: false)
+        }.value
+
+        operationState = .deleting(progress: 0.8)
+
+        // Only drop the items that actually made it to the Trash — failed/blocked ones stay.
+        let trashedPaths = Set(outcome.removed.map { $0.standardizedFileURL.path })
+        let deletedItems = itemsToDelete.filter { trashedPaths.contains($0.url.standardizedFileURL.path) }
+        let deletedIds = Set(deletedItems.map(\.id))
+        let problemCount = outcome.failedCount + outcome.blockedCount
+
         await MainActor.run {
-            // Remove deleted items from list
-            mediaItems.removeAll { selection.contains($0.id) }
-            selection.removeAll()
-            operationState = .idle
-            
-            // Refresh disk info
-            appState.scanService.refreshDiskInfo()
+            mediaItems.removeAll { deletedIds.contains($0.id) }
+            selection.subtract(deletedIds)
+
+            // Recompute stats and re-persist so deleted items don't reappear on next launch.
+            refreshMediaStatsAndCache(deletedIds: deletedIds)
+
+            let failedEverything = problemCount > 0 && deletedIds.isEmpty
+            operationState = failedEverything
+                ? .error("\(problemCount) item(s) couldn't be moved to Trash")
+                : .idle
+
+            if !outcome.removed.isEmpty {
+                appState.scanService.applyCleanup(trashed: outcome.removed, freedBytes: outcome.freedBytes)
+            } else {
+                appState.scanService.refreshDiskInfo()
+            }
+
+            if failedEverything {
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    await MainActor.run { operationState = .idle }
+                }
+            }
         }
     }
-    
-    private func organizeSelected() {
-        // TODO: Implement organize functionality
-        // Could open a sheet with organization options
+
+    /// Rebuild analysisResult from the remaining items and overwrite the persisted cache.
+    /// `deletedIds` lets duplicate groups and suggestions be carried over instead of wiped —
+    /// trashing one file shouldn't make the whole Suggestions section vanish.
+    private func refreshMediaStatsAndCache(deletedIds: Set<MediaItem.ID>) {
+        guard !mediaItems.isEmpty else {
+            analysisResult = nil
+            Task { await ScanDataStore.shared.clearMediaAnalysis() }
+            return
+        }
+
+        let previous = analysisResult
+
+        // Duplicate groups: `potentialSavings` is computed from `items`, so filtering is safe.
+        // A group with fewer than two survivors is no longer a duplicate.
+        let duplicateGroups = (previous?.duplicateGroups ?? []).compactMap { group -> DuplicateGroup? in
+            let survivors = group.items.filter { !deletedIds.contains($0.id) }
+            guard survivors.count > 1 else { return nil }
+            return survivors.count == group.items.count ? group : DuplicateGroup(items: survivors)
+        }
+
+        // Suggestions: `potentialSavings` is a stored estimate (compression deltas aren't a
+        // sum of file sizes), so a partially-deleted suggestion can't be recomputed honestly.
+        // Keep the untouched ones verbatim and drop any that referenced a deleted item.
+        let suggestions = (previous?.suggestions ?? []).filter { suggestion in
+            !suggestion.affectedItems.contains { deletedIds.contains($0.id) }
+        }
+
+        let photoCount = mediaItems.filter { $0.type == .photo || $0.type == .livePhoto || $0.type == .raw }.count
+        let stats = MediaAnalysisResult.MediaStats(
+            totalCount: mediaItems.count,
+            totalSize: mediaItems.reduce(0) { $0 + $1.sizeBytes },
+            photoCount: photoCount,
+            videoCount: mediaItems.filter { $0.type == .video }.count,
+            screenshotCount: mediaItems.filter { $0.type == .screenshot }.count,
+            largeFileCount: mediaItems.filter { $0.subcategories.contains(.largeFiles) }.count,
+            oldMediaCount: mediaItems.filter { $0.subcategories.contains(.oldMedia) }.count,
+            // Derive from the surviving groups when we have them; a cache-restored result has
+            // no groups (they aren't persisted), so keep the previously reported figure.
+            duplicateCount: (previous?.duplicateGroups.isEmpty == false)
+                ? duplicateGroups.reduce(0) { $0 + $1.items.count }
+                : (previous?.stats.duplicateCount ?? 0)
+        )
+        let result = MediaAnalysisResult(
+            items: mediaItems,
+            duplicateGroups: duplicateGroups,
+            suggestions: suggestions,
+            stats: stats
+        )
+        analysisResult = result
+
+        Task {
+            do {
+                try await ScanDataStore.shared.saveMediaAnalysis(result)
+            } catch {
+                Log.media.error("Failed to update cached media analysis: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
     
     private func revealSelected() {

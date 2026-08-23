@@ -199,8 +199,10 @@ struct ExplorerView: View {
         pendingDelete = nil
         guard isActionable(node) else { return }
         let outcome = DeleteEngine.trashFiles([node.url])
-        if outcome.trashed.contains(where: { $0.standardizedFileURL.path == node.url.standardizedFileURL.path }) {
+        if outcome.removed.contains(where: { $0.standardizedFileURL.path == node.url.standardizedFileURL.path }) {
             vm.didTrash(node)
+            // Keep overview/category numbers in sync with what was just trashed.
+            appState.scanService.applyCleanup(trashed: outcome.removed, freedBytes: outcome.freedBytes)
             if hovered === node { hovered = nil }
         } else {
             let n = outcome.failedCount + outcome.blockedCount

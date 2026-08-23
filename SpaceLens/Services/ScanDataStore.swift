@@ -10,6 +10,13 @@ actor ScanDataStore {
     // These are pure path computations (no mutable actor state), so they're nonisolated and
     // safe to use from the synchronous init and any context.
     private nonisolated var cacheDirectory: URL {
+        // Application Support, not ~/Library/Caches — macOS purges Caches under disk
+        // pressure (and cleanup tools nuke it), which would silently wipe scan history.
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return appSupport.appendingPathComponent("com.spacelens.app", isDirectory: true)
+    }
+
+    private nonisolated var legacyCachesDirectory: URL {
         let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
         return paths[0].appendingPathComponent("com.spacelens.app", isDirectory: true)
     }
@@ -37,6 +44,31 @@ actor ScanDataStore {
     private init() {
         // Ensure cache directory exists
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        migrateLegacyCacheIfNeeded()
+    }
+
+    /// One-time migration from the old ~/Library/Caches location. Carries over whatever
+    /// survived (Caches is purgeable) unless a new-location cache already exists.
+    private nonisolated func migrateLegacyCacheIfNeeded() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: legacyCachesDirectory.path) else { return }
+
+        // Move whatever is actually in there rather than a hardcoded filename list, so a
+        // cache file added later isn't silently dropped by this migration.
+        if !fm.fileExists(atPath: scanDataURL.path),
+           let contents = try? fm.contentsOfDirectory(at: legacyCachesDirectory, includingPropertiesForKeys: nil) {
+            for source in contents {
+                let destination = cacheDirectory.appendingPathComponent(source.lastPathComponent)
+                guard !fm.fileExists(atPath: destination.path) else { continue }
+                try? fm.moveItem(at: source, to: destination)
+            }
+        }
+
+        // Only drop the old directory once it's genuinely empty — never blind-delete files
+        // this migration didn't manage to move.
+        if let remaining = try? fm.contentsOfDirectory(atPath: legacyCachesDirectory.path), remaining.isEmpty {
+            try? fm.removeItem(at: legacyCachesDirectory)
+        }
     }
     
     // MARK: - Persistence Models
@@ -99,7 +131,10 @@ actor ScanDataStore {
         fileCounts: [StorageCategory: Int] = [:],
         progress: ScanProgress,
         scanDuration: TimeInterval,
-        scanState: ScanState = .complete
+        scanState: ScanState = .complete,
+        /// When the scan this snapshot describes happened. Callers re-persisting an existing
+        /// snapshot (e.g. after a deletion) pass the original date so it isn't backdated to now.
+        scanDate: Date = Date()
     ) async throws {
         // Persist the REAL per-category file count (tracked live during the scan), not just the
         // top-N file list's count — the list is empty until a scan completes, so deriving the
@@ -133,12 +168,12 @@ actor ScanDataStore {
             buckets: buckets,
             totalBytes: summary.totalBytes,
             fileCount: progress.scannedFiles,
-            scanDate: Date(),
+            scanDate: scanDate,
             topFiles: topFiles
         )
-        
+
         let metadata = ScanMetadata(
-            lastScanDate: Date(),
+            lastScanDate: scanDate,
             scanDurationSeconds: scanDuration,
             totalFilesScanned: progress.scannedFiles,
             totalBytesScanned: progress.scannedBytes,
@@ -271,30 +306,38 @@ actor ScanDataStore {
         }
         
         let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
+        // Machine-only cache: compact JSON (smaller, faster to write/load)
         let data = try encoder.encode(persistedApps)
-        try data.write(to: appsDataURL)
+        try data.write(to: appsDataURL, options: .atomic)
     }
     
     func loadApps() async throws -> [AppEntry]? {
         guard fileManager.fileExists(atPath: appsDataURL.path) else {
             return nil
         }
-        
-        let data = try Data(contentsOf: appsDataURL)
-        let decoder = JSONDecoder()
-        let persistedApps = try decoder.decode([PersistedAppEntry].self, from: data)
-        
-        return persistedApps.map { persisted in
-            AppEntry(
-                name: persisted.name,
-                bundleIdentifier: persisted.bundleIdentifier,
-                bundleURL: URL(fileURLWithPath: persisted.bundlePath),
-                bundleSizeBytes: persisted.bundleSizeBytes,
-                supportSizeBytes: persisted.supportSizeBytes,
-                cacheSizeBytes: persisted.cacheSizeBytes,
-                containerSizeBytes: persisted.containerSizeBytes
-            )
+
+        do {
+            let data = try Data(contentsOf: appsDataURL)
+            let decoder = JSONDecoder()
+            let persistedApps = try decoder.decode([PersistedAppEntry].self, from: data)
+
+            return persistedApps.map { persisted in
+                AppEntry(
+                    name: persisted.name,
+                    bundleIdentifier: persisted.bundleIdentifier,
+                    bundleURL: URL(fileURLWithPath: persisted.bundlePath),
+                    bundleSizeBytes: persisted.bundleSizeBytes,
+                    supportSizeBytes: persisted.supportSizeBytes,
+                    cacheSizeBytes: persisted.cacheSizeBytes,
+                    containerSizeBytes: persisted.containerSizeBytes
+                )
+            }
+        } catch {
+            // Torn/corrupt file (or schema change): delete it so the next launch starts
+            // clean instead of failing forever — callers fall back to a fresh analysis.
+            Log.cache.error("Apps cache unreadable, resetting it: \(error.localizedDescription, privacy: .public)")
+            try? fileManager.removeItem(at: appsDataURL)
+            return nil
         }
     }
     
@@ -335,22 +378,24 @@ actor ScanDataStore {
     func savePerformanceHistory(_ history: ScanPerformanceHistory) async throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
+        // Machine-only cache: compact JSON (smaller, faster to write/load)
         let data = try encoder.encode(history)
-        try data.write(to: performanceHistoryURL)
+        try data.write(to: performanceHistoryURL, options: .atomic)
     }
     
     func loadPerformanceHistory() async -> ScanPerformanceHistory {
         guard fileManager.fileExists(atPath: performanceHistoryURL.path) else {
             return ScanPerformanceHistory()
         }
-        
+
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let data = try Data(contentsOf: performanceHistoryURL)
             return try decoder.decode(ScanPerformanceHistory.self, from: data)
         } catch {
+            // Self-heal: a torn/corrupt history file would otherwise fail on every launch.
+            try? fileManager.removeItem(at: performanceHistoryURL)
             return ScanPerformanceHistory()
         }
     }
@@ -428,20 +473,30 @@ actor ScanDataStore {
         
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
+        // Machine-only cache: compact JSON (smaller, faster to write/load)
         let data = try encoder.encode(analysis)
-        try data.write(to: mediaAnalysisURL)
+        try data.write(to: mediaAnalysisURL, options: .atomic)
     }
     
     func loadMediaAnalysis() async throws -> (items: [MediaItem], stats: MediaAnalysisResult.MediaStats, analysisDate: Date)? {
         guard fileManager.fileExists(atPath: mediaAnalysisURL.path) else {
             return nil
         }
-        
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let data = try Data(contentsOf: mediaAnalysisURL)
-        let analysis = try decoder.decode(PersistedMediaAnalysis.self, from: data)
+
+        let analysis: PersistedMediaAnalysis
+        do {
+            let data = try Data(contentsOf: mediaAnalysisURL)
+            analysis = try decoder.decode(PersistedMediaAnalysis.self, from: data)
+        } catch {
+            // Torn/corrupt cache: delete it so callers re-analyze instead of failing forever.
+            Log.cache.error("Media analysis cache unreadable, resetting it: \(error.localizedDescription, privacy: .public)")
+            try? fileManager.removeItem(at: mediaAnalysisURL)
+            try? fileManager.removeItem(at: mediaItemsIncrementalURL)
+            return nil
+        }
         
         // Convert back to app models
         let items = analysis.items.compactMap { persisted -> MediaItem? in
@@ -649,9 +704,9 @@ actor ScanDataStore {
         
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = .prettyPrinted
+        // Machine-only cache: compact JSON (smaller, faster to write/load)
         let data = try encoder.encode(analysis)
-        try data.write(to: mediaAnalysisURL)
+        try data.write(to: mediaAnalysisURL, options: .atomic)
         
         // Clean up incremental file
         try? fileManager.removeItem(at: mediaItemsIncrementalURL)

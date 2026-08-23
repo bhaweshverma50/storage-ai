@@ -3,7 +3,7 @@ import SwiftUI
 struct AppDetailView: View {
     let apps: [AppEntry]
     var isRefreshing: Bool = false
-    var onCleanup: ((Int64) -> Void)?  // Callback when cleanup happens, with bytes freed
+    var onCleanup: ((Int64, [URL]) -> Void)?  // Callback when cleanup happens: bytes freed + trashed URLs
     var onRefresh: (() -> Void)?       // Re-analyze apps on demand (list is cached between scans)
     @State private var searchText = ""
     @State private var selectedApp: AppEntry?
