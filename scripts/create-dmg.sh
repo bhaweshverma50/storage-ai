@@ -8,8 +8,8 @@ set -e
 # Configuration
 APP_NAME="SpaceLens"
 BUNDLE_NAME="SpaceLens"
-VERSION="2.14.0"
-BUILD_NUMBER="${BUILD_NUMBER:-32}"
+VERSION="2.15.0"
+BUILD_NUMBER="${BUILD_NUMBER:-33}"
 DMG_NAME="SpaceLens-${VERSION}"
 SOURCE_PLIST="$(pwd)/SpaceLens/Info.plist"
 ENTITLEMENTS="$(pwd)/SpaceLens/SpaceLens.entitlements"
@@ -25,7 +25,29 @@ fi
 if [ -z "${CODESIGN_IDENTITY:-}" ]; then
     CODESIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')
 fi
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+
+# Refuse to ship an ad-hoc-signed DMG by default: Gatekeeper blocks it on every other Mac,
+# and TCC permission grants don't survive rebuilds. Explicit opt-in for local-only builds.
+if [ -z "${CODESIGN_IDENTITY:-}" ]; then
+    if [ "${ALLOW_AD_HOC:-0}" = "1" ]; then
+        CODESIGN_IDENTITY="-"
+        echo "⚠️  ALLOW_AD_HOC=1 — building an AD-HOC signed DMG. Local use only, NOT distributable."
+    else
+        cat >&2 <<'EOF'
+❌ No codesigning identity found — refusing to build a silently ad-hoc-signed DMG.
+   A DMG like that gets blocked by Gatekeeper on other Macs.
+
+   Options:
+   1. Install a "Developer ID Application" certificate (recommended for distribution).
+   2. Point at a specific identity:
+        CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/create-dmg.sh
+   3. Local-only build (not shareable):
+        ALLOW_AD_HOC=1 ./scripts/create-dmg.sh
+EOF
+        exit 1
+    fi
+fi
+
 VOLUME_NAME="${APP_NAME} ${VERSION}"
 BUILD_DIR="$(pwd)/.build/release"
 DIST_DIR="$(pwd)/dist"

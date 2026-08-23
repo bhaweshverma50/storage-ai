@@ -235,9 +235,13 @@ final class OllamaSetupService: ObservableObject {
                     self?.progress = progressValue * 0.3 // Download is 0-30% of total
                 }
             }
-            
+
             let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
             let task = session.downloadTask(with: url) { localURL, response, error in
+                // The delegate-retained session must be invalidated or it (and the delegate)
+                // leak for the rest of the process lifetime.
+                defer { session.finishTasksAndInvalidate() }
+
                 if let error = error {
                     continuation.resume(throwing: SetupError.downloadFailed(error.localizedDescription))
                     return

@@ -503,7 +503,7 @@ struct MediaActionBar: View {
     let selectedSize: Int64
     let compressionEstimate: CompressionEstimate?
     let onCompress: () -> Void
-    let onOrganize: () -> Void
+    var onOrganize: (() -> Void)? = nil
     let onDelete: () -> Void
     let onReveal: () -> Void
     
@@ -542,14 +542,16 @@ struct MediaActionBar: View {
             .buttonStyle(.bordered)
             .disabled(selectionCount != 1)
             
-            Button {
-                onOrganize()
-            } label: {
-                Label("Organize", systemImage: "folder.badge.gearshape")
+            if let onOrganize {
+                Button {
+                    onOrganize()
+                } label: {
+                    Label("Organize", systemImage: "folder.badge.gearshape")
+                }
+                .buttonStyle(.bordered)
+                .disabled(selectionCount == 0)
             }
-            .buttonStyle(.bordered)
-            .disabled(selectionCount == 0)
-            
+
             Button {
                 onCompress()
             } label: {

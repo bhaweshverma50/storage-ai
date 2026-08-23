@@ -120,34 +120,22 @@ enum FileIndexer {
         
         let progressCallback: (ScanUpdate) -> Void
         
-        init(
-            initialBuckets: [StorageCategory: Int64],
-            initialFiles: [StorageCategory: [FileEntry]]?,
-            initialScannedFiles: Int,
-            initialScannedBytes: Int64,
-            progress: @escaping (ScanUpdate) -> Void
-        ) {
-            self.buckets = initialBuckets
-            self.scannedFiles = initialScannedFiles
-            self.scannedBytes = initialScannedBytes
+        /// Always starts from zero. Seeding a partial scan's totals here used to double-count
+        /// on resume — enumeration re-walks every root, so there is nothing to carry over.
+        init(progress: @escaping (ScanUpdate) -> Void) {
+            self.buckets = StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
+            self.scannedFiles = 0
+            self.scannedBytes = 0
             self.progressCallback = progress
             self.lastProgressUpdate = Date()
-            
-            // Initialize heaps
+
             var heaps: [StorageCategory: FileHeap] = [:]
             for category in StorageCategory.allCases {
                 heaps[category] = FileHeap(maxSize: 1000)
             }
-            if let initialFiles = initialFiles {
-                for (category, files) in initialFiles {
-                    for file in files {
-                        heaps[category]?.insert(file)
-                    }
-                }
-            }
             self.fileHeaps = heaps
-            
-            self.categoryFileCounts = initialFiles?.mapValues { $0.count } ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
+
+            self.categoryFileCounts = StorageCategory.allCases.reduce(into: [StorageCategory: Int]()) { $0[$1] = 0 }
         }
         
         func add(result: BatchResult, phase: ScanPhase) {
@@ -210,22 +198,9 @@ enum FileIndexer {
         includeHidden: Bool,
         excludedPaths: [String],
         cancellationToken: CancellationToken,
-        progress: @escaping (ScanUpdate) -> Void,
-        initialBuckets: [StorageCategory: Int64]? = nil,
-        initialFiles: [StorageCategory: [FileEntry]]? = nil,
-        initialScannedFiles: Int = 0,
-        initialScannedBytes: Int64 = 0
+        progress: @escaping (ScanUpdate) -> Void
     ) async throws -> ScanResult {
-        // Start with initial values
-        let baseBuckets = initialBuckets ?? StorageCategory.allCases.reduce(into: [StorageCategory: Int64]()) { $0[$1] = 0 }
-        
-        let aggregator = ScanAggregator(
-            initialBuckets: baseBuckets,
-            initialFiles: initialFiles,
-            initialScannedFiles: initialScannedFiles,
-            initialScannedBytes: initialScannedBytes,
-            progress: progress
-        )
+        let aggregator = ScanAggregator(progress: progress)
         
         // Initial progress
         await aggregator.emitProgress(currentPath: "Starting scan...", phase: .preparing)

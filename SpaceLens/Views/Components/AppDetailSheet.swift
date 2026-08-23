@@ -5,7 +5,7 @@ struct AppDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accentTheme) private var accentTheme
     let app: AppEntry
-    var onCleanup: ((Int64) -> Void)?  // Callback with bytes cleaned
+    var onCleanup: ((Int64, [URL]) -> Void)?  // Callback with bytes freed + trashed URLs
     
     @State private var showCleanCacheAlert = false
     @State private var showRemoveDataAlert = false
@@ -382,7 +382,7 @@ struct AppDetailSheet: View {
                 } else {
                     currentCacheSize = 0
                     operationResult = "Moved \(Formatters.bytes(outcome.freedBytes)) of cache to Trash. Empty the Trash to reclaim the space."
-                    onCleanup?(outcome.freedBytes)
+                    onCleanup?(outcome.freedBytes, outcome.removed)
                 }
             }
         }
@@ -416,7 +416,7 @@ struct AppDetailSheet: View {
                     operationResult = skipped > 0
                         ? "Moved \(Formatters.bytes(outcome.freedBytes)) to Trash (\(skipped) skipped). Empty the Trash to reclaim the space."
                         : "Moved \(Formatters.bytes(outcome.freedBytes)) of app data to Trash. Empty the Trash to reclaim the space."
-                    onCleanup?(outcome.freedBytes)
+                    onCleanup?(outcome.freedBytes, outcome.removed)
                 }
             }
         }
@@ -453,11 +453,11 @@ struct AppDetailSheet: View {
                 switch bundleResult {
                 case .success(let removedBundleBytes):
                     let freed = dataOutcome.freedBytes + removedBundleBytes
-                    onCleanup?(freed)
+                    onCleanup?(freed, dataOutcome.removed + [bundle])
                     dismiss()
                 case .failure(let error):
                     // Bundle couldn't be moved; still credit any data we did trash.
-                    if dataOutcome.freedBytes > 0 { onCleanup?(dataOutcome.freedBytes) }
+                    if dataOutcome.freedBytes > 0 { onCleanup?(dataOutcome.freedBytes, dataOutcome.removed) }
                     operationError = "Couldn't move \(app.name) to Trash: \(error.localizedDescription)"
                 }
             }

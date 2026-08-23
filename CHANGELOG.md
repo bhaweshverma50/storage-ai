@@ -2,6 +2,74 @@
 
 All notable changes to SpaceLens are documented here.
 
+## [2.15.0] — 2026-08-23
+
+A correctness release: a code review of the previous cycle's changes turned up several
+places where the app reported numbers it hadn't actually earned. Everything below is a
+fix to what SpaceLens *tells* you versus what it *did*.
+
+### ⚠️ Changed — Emptying the Trash is now permanent
+
+- **"Trash" cleanup previously freed nothing.** macOS `trashItem` on a file that is already
+  in `~/.Trash` silently succeeds without moving anything, so the card reported "moved N
+  items to Trash — X GB freed" while reclaiming zero bytes.
+- Emptying the Trash now **deletes those files outright**, which is what Finder's Empty
+  Trash does and the only way to actually reclaim the space. The confirmation dialog says
+  so explicitly, and permanently-deleted items are counted separately from trashed ones so
+  the success banner never calls them recoverable.
+- Permanent removal is restricted to direct children of `~/.Trash` and re-verifies that
+  precondition itself rather than trusting its caller. Every other delete path in the app
+  is still a recoverable move-to-Trash.
+- Note: this needs **Full Disk Access**. Without it the card now reports a failure instead
+  of a silent success.
+
+### 🐛 Fixed — scan accounting
+
+- **Resumed scans no longer poison future time estimates.** A resume re-walks every root
+  from scratch, but the previous partial's elapsed time was still carried over. Pairing
+  recounted-from-zero bytes with stale elapsed understated throughput, and that figure was
+  written into the persisted performance history — inflating the ETA of every later scan.
+- **Cleanups now show up everywhere.** Freeing space from the Cleanup tab, an app's detail
+  sheet, the Explorer, or the Media viewer updates the Overview chart, the category cards,
+  the file counts, and the on-disk cache — previously those kept reporting pre-cleanup
+  sizes until the next full scan.
+- **Deleting files no longer fakes a scan timestamp.** Re-persisting after a deletion used
+  to stamp "now" as the scan date and record every idle hour since the scan started as its
+  duration, so the UI claimed you had "scanned just now".
+- **A stalled scan says so.** If progress stops advancing for a few minutes — usually a
+  pending permission prompt or a very slow subtree — an advisory appears instead of a UI
+  that just looks frozen.
+- Progress ticks are ordered, so a late-arriving update can no longer make progress jump
+  backward or stick on a stale value.
+
+### 🐛 Fixed — data safety and durability
+
+- **Scan history survives disk pressure.** The cache moved from `~/Library/Caches` (which
+  macOS purges, and which cleanup tools wipe) to `~/Library/Application Support`. Existing
+  data is migrated on first launch.
+- **SpaceLens no longer deletes its own scan history.** Its state directory sits inside two
+  cleanup targets; clearing those now skips it.
+- **Corrupt caches self-heal.** A torn or schema-changed cache file is discarded and rebuilt
+  instead of failing on every launch, and all cache writes are atomic.
+- **Unreadable folders are reported, not silently skipped.** A permission-protected folder
+  during cleanup used to look like a successful no-op.
+- **The system-path guard is case-insensitive.** On the default (case-insensitive) volume,
+  `/SYSTEM/Library` and `/Private/var` reach the same protected files as their canonical
+  spellings and are now refused too.
+
+### 🐛 Fixed — everything else
+
+- **Deleting media keeps your suggestions.** Trashing one file used to wipe the whole
+  Suggestions section and the duplicate groups, and persist that empty result.
+- **Media deletion routes through the safety guard** and reports what it couldn't remove,
+  rather than swallowing failures.
+- The DMG script **refuses to silently ad-hoc sign**. An ad-hoc DMG is blocked by Gatekeeper
+  on every other Mac and loses permission grants on each rebuild. Use `ALLOW_AD_HOC=1` for
+  a local-only build.
+- Fixed a `URLSession` leak in the Ollama model downloader that persisted for the rest of
+  the process lifetime.
+- Removed the non-functional "Organize" button from the media action bar.
+
 ## [2.14.0] — 2026-06-04
 
 ### ✨ Rebrand: Storage AI is now SpaceLens

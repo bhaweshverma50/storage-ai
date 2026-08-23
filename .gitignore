@@ -54,3 +54,9 @@ dist/
 *~
 .serena/
 .cursor/
+
+# Spec Kit tooling
+.claude/skills/speckit-*
+.specify/
+specs/
+graphify-out/

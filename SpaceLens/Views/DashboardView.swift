@@ -199,9 +199,10 @@ struct DashboardView: View {
                 AppDetailView(
                     apps: topApps,
                     isRefreshing: isLoadingApps,
-                    onCleanup: { _ in
-                        // Refresh disk usage and reload the app list so removed/uninstalled apps disappear.
-                        appState.scanService.refreshDiskInfo()
+                    onCleanup: { freedBytes, trashed in
+                        // Reflect freed space in buckets/cache, then reload so removed or
+                        // uninstalled apps disappear from the list.
+                        appState.scanService.applyCleanup(trashed: trashed, freedBytes: freedBytes)
                         Task { await loadAppData() }
                     },
                     onRefresh: { Task { await loadAppData() } }
@@ -211,8 +212,10 @@ struct DashboardView: View {
                     targets: cleanupTargets,
                     isLoading: isLoadingCleanup,
                     isScanning: appState.scanService.isScanning,
-                    onCleanupCompleted: {
-                        appState.scanService.refreshDiskInfo()
+                    onCleanupCompleted: { outcome in
+                        // Update scanned totals + persisted cache, not just disk info —
+                        // otherwise overview/categories keep showing pre-cleanup sizes.
+                        appState.scanService.applyCleanup(trashed: outcome.removed, freedBytes: outcome.freedBytes)
                         await loadCleanupTargets()
                     }
                 )
@@ -435,6 +438,12 @@ struct OverviewView: View {
 
                     // Access advisory (non-fatal): scan likely under-reported without Full Disk Access
                     if let warning = appState.scanService.accessWarning {
+                        accessWarningBanner(warning)
+                    }
+
+                    // Stall advisory (non-fatal): progress hasn't advanced — likely a
+                    // permission prompt or a very slow subtree.
+                    if appState.scanService.isScanning, let warning = appState.scanService.stallWarning {
                         accessWarningBanner(warning)
                     }
                     

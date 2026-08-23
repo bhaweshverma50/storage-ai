@@ -6,12 +6,17 @@ struct CleanupView: View {
     /// True while a scan is running — cleanup is disabled to avoid mutating the filesystem mid-scan.
     var isScanning: Bool = false
     /// Called after a real (non-dry-run) cleanup so the parent can refresh disk/accounting and rebuild targets.
-    var onCleanupCompleted: (() async -> Void)? = nil
+    var onCleanupCompleted: ((DeleteEngine.Outcome) async -> Void)? = nil
     @State private var selection = Set<UUID>()
     @State private var dryRun = true
     @State private var isDeleting = false
     @State private var lastDeleted: [URL] = []
     @State private var lastFreedBytes: Int64 = 0
+    /// How many of `lastDeleted` were deleted outright rather than trashed (Empty Trash).
+    @State private var lastPermanentCount = 0
+    /// Mode the last run actually used — the banner must not flip text if the user moves
+    /// the Preview/Delete toggle afterwards.
+    @State private var lastRunWasDryRun = true
     @State private var errorMessage: String?
     @State private var showConfirmation = false
     @State private var filter: CleanupScope? = nil
@@ -53,10 +58,15 @@ struct CleanupView: View {
         } message: {
             Text(confirmationMessage)
         }
+        .onChange(of: targets.map(\.id)) { _, newIds in
+            // Targets are rebuilt (fresh UUIDs) after cleanup/scan — drop stale ids so the
+            // action button never shows a count for selections that no longer exist.
+            selection = selection.intersection(Set(newIds))
+        }
     }
 
-    // Per-target confirmation copy: names the exact targets and their sizes, states that
-    // items go to the Trash (recoverable), and warns when Deep Clean targets are selected.
+    // Per-target confirmation copy: names the exact targets and their sizes, states whether
+    // items are recoverable, and warns when Deep Clean targets are selected.
     private var confirmationMessage: String {
         if dryRun {
             return "This will show what would be removed, without deleting anything."
@@ -65,6 +75,11 @@ struct CleanupView: View {
             .map { "•  \($0.title) — \(Formatters.bytes($0.estimatedBytes))" }
             .joined(separator: "\n")
         var msg = "These items will be moved to the Trash (you can recover them):\n\n\(lines)"
+        if selectionEmptiesTrash {
+            // Emptying the Trash is the one irreversible action here — never let it hide
+            // behind the "you can recover them" wording above.
+            msg += "\n\n⛔️ Emptying the Trash is PERMANENT. Those files are deleted outright and cannot be recovered."
+        }
         if selectedTargets.contains(where: { $0.scope == .aggressive }) {
             msg += "\n\n⚠️ Deep Clean targets (Downloads, App Data, Containers) can contain important files — review carefully before continuing."
         }
@@ -73,6 +88,36 @@ struct CleanupView: View {
 
     private var selectedTargets: [CleanupTarget] {
         targets.filter { selection.contains($0.id) }
+    }
+
+    /// Banner copy for the last run. Trashed and permanently-deleted items are counted
+    /// separately — lumping them together would tell the user that files emptied from the
+    /// Trash are still recoverable.
+    private var lastRunSummary: String {
+        let trashedCount = lastDeleted.count - lastPermanentCount
+        let preview = lastRunWasDryRun
+        var parts: [String] = []
+        if trashedCount > 0 {
+            parts.append("\(preview ? "move" : "moved") \(trashedCount) items to Trash")
+        }
+        if lastPermanentCount > 0 {
+            parts.append("\(preview ? "permanently delete" : "permanently deleted") \(lastPermanentCount) items from the Trash")
+        }
+        let action = parts.joined(separator: " and ")
+        guard !preview else { return "Preview: would \(action)" }
+        // Either clause can come first, so capitalize once at the end.
+        let sentence = action.prefix(1).uppercased() + action.dropFirst()
+        return "\(sentence) — \(Formatters.bytes(lastFreedBytes)) freed"
+    }
+
+    /// True when the selection includes `~/.Trash`, whose contents are deleted permanently.
+    /// Detected by path rather than title so renaming the card can't silently drop the warning.
+    private var selectionEmptiesTrash: Bool {
+        let trash = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash").standardizedFileURL.path
+        return selectedTargets.contains { target in
+            target.paths.contains { $0.standardizedFileURL.path == trash }
+        }
     }
     
     // MARK: - Header
@@ -250,9 +295,7 @@ struct CleanupView: View {
             if !lastDeleted.isEmpty {
                 MessageBanner(
                     icon: "checkmark.circle.fill",
-                    message: dryRun
-                        ? "Preview: would move \(lastDeleted.count) items to Trash"
-                        : "Moved \(lastDeleted.count) items to Trash (\(Formatters.bytes(lastFreedBytes)) freed)",
+                    message: lastRunSummary,
                     color: .green
                 )
             }
@@ -316,6 +359,7 @@ struct CleanupView: View {
 
         let selected = selectedTargets
         let isDry = dryRun
+        lastRunWasDryRun = isDry
 
         Task {
             let outcome = await Task.detached(priority: .userInitiated) {
@@ -325,17 +369,18 @@ struct CleanupView: View {
             // After a real delete, let the parent refresh disk usage and rebuild targets so
             // freed space and per-card estimates reflect reality (no stale figures / re-deletes).
             if !isDry {
-                await onCleanupCompleted?()
+                await onCleanupCompleted?(outcome)
             }
 
             await MainActor.run {
-                lastDeleted = outcome.trashed
+                lastDeleted = outcome.removed
+                lastPermanentCount = outcome.permanentCount
                 lastFreedBytes = outcome.freedBytes
                 if !isDry {
                     selection.removeAll()
                 }
                 var problems: [String] = []
-                if outcome.failedCount > 0 { problems.append("\(outcome.failedCount) couldn't be moved to Trash") }
+                if outcome.failedCount > 0 { problems.append("\(outcome.failedCount) couldn't be removed") }
                 if outcome.blockedCount > 0 { problems.append("\(outcome.blockedCount) skipped for safety") }
                 errorMessage = problems.isEmpty ? nil : problems.joined(separator: " · ")
                 isDeleting = false
